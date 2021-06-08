@@ -603,6 +603,9 @@ struct maple_sega_vmu: maple_base
 
 		case MDCF_BlockWrite:
 			{
+				if (config::DojoEnable)
+					return MDRS_DeviceReply;
+
 				u32 function = r32();
 				switch (function)
 				{
@@ -996,9 +999,12 @@ struct maple_sega_purupuru : maple_base
 
 		case MDCF_BlockWrite:
 
-			//Auto-stop time
-			AST = dma_buffer_in[10];
-			AST_ms = AST * 250 + 250;
+			if (!config::DojoEnable)
+			{
+				//Auto-stop time
+				AST = dma_buffer_in[10];
+				AST_ms = AST * 250 + 250;
+			}
 
 			return MDRS_DeviceReply;
 
