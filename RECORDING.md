@@ -5,6 +5,11 @@ This is my attempt to get flycast to record to a external video file.
   * I added a audiobackend called rawfile to write out the audio
   * I modified gles.cpp to write out rendered video frames
 
+# Goal
+The goal of this is to produce a build of flycast that can record flycast replays to a video file without the need for screen capture software. This would enable automated recording of replays that can be then uploaded to fightcadevids.com.
+
+Ideally, this wouldn't need to run in real time. Eg: Even if recording a 5 minute replay takes 10 minute, all audio and video frames would still be captured and synced correctly.
+
 # Status
 Currently this fork is able to write raw auto out to a file, and RENDERED raw video frames.
 
