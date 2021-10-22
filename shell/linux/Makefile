@@ -4,7 +4,9 @@ FOR_LINUX :=1
 #NO_REC := 1
 #NO_REND := 1
 USE_OSS := 1
-#USE_PULSEAUDIO := 1
+USE_SNDFILE := 1
+TEST_AUTOMATION := 1
+USE_PULSEAUDIO := 1
 #USE_SDLAUDIO := 1
 #USE_LIBAO := 1
 #USE_SDL := 1
@@ -438,6 +440,11 @@ endif
 
 ifdef TEST_AUTOMATION
     CFLAGS += -DTEST_AUTOMATION
+endif
+
+ifdef USE_SNDFILE
+    LIBS += `pkg-config --libs sndfile`
+    CFLAGS += -DUSE_SNDFILE
 endif
 
 ifdef DEBUGFAST

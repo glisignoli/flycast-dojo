@@ -49,3 +49,7 @@ generated
 # JetBrains IDES
 .idea/
 cmake-build-*/
+
+# glisignoli
+.vscode
+flycast.elf

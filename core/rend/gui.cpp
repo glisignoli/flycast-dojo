@@ -2546,6 +2546,8 @@ static void gui_network_start()
 		naomiNetwork.startNow();
 }
 
+bool vid_started = false;
+
 static void gui_display_loadscreen()
 {
 	centerNextWindow();
@@ -2616,11 +2618,13 @@ static void gui_display_loadscreen()
 				dojo.LoadOfflineConfig();
 				gui_state = GuiState::Closed;
 				ImGui::Text("STARTING...");
+				vid_started = true;
 			}
 			else
 			{
 				gui_state = GuiState::Closed;
 				ImGui::Text("STARTING...");
+				vid_started = true;
 			}
 		} catch (const ReicastException& ex) {
 			ERROR_LOG(BOOT, "%s", ex.reason.c_str());
@@ -3058,4 +3062,3 @@ static void term_vmus()
 		crosshairTexId = ImTextureID();
 	}
 }
-

@@ -2,6 +2,8 @@
 #include <oslib/audiostream.h>
 #include <input/gamepad_device.h>
 
+bool vid_started = false;
+
 DojoSession::DojoSession()
 {
 	Init();
@@ -402,6 +404,7 @@ u16 DojoSession::ApplyNetInputs(PlainJoystickState* pjs, u32 port)
 
 u16 DojoSession::ApplyNetInputs(u16 buttons, u32 port)
 {
+	vid_started = true;
 	return ApplyNetInputs(0, buttons, port);
 }
 
@@ -1405,4 +1408,3 @@ void DojoSession::ResetTraining()
 }
 
 DojoSession dojo;
-

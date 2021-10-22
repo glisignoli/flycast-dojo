@@ -319,21 +319,38 @@ GLuint paletteTextureId;
 
 glm::mat4 ViewportMatrix;
 
+static bool video_start_time_printed = false;
+static unsigned long last_frame_time;
+
 #ifdef TEST_AUTOMATION
 void do_swap_automation()
 {
 	static FILE* video_file = fopen(cfgLoadStr("record", "rawvid","").c_str(), "wb");
 	extern bool do_screenshot;
-
 	if (video_file)
 	{
 		int bytesz = gl.ofbo.width * gl.ofbo.height * 3;
 		u8* img = new u8[bytesz];
 		
+		const auto p2 = std::chrono::system_clock::now();
+
+		if (video_start_time_printed == false) {
+			printf("video_time_start: %lu\n", std::chrono::duration_cast<std::chrono::milliseconds>(p2.time_since_epoch()).count());
+			last_frame_time = std::chrono::duration_cast<std::chrono::milliseconds>(p2.time_since_epoch()).count();
+			video_start_time_printed = true;
+		} else {
+			unsigned long frame_timer = std::chrono::duration_cast<std::chrono::milliseconds>(p2.time_since_epoch()).count() - last_frame_time;
+			printf("Frame render time: %lu\n", frame_timer);
+			last_frame_time = std::chrono::duration_cast<std::chrono::milliseconds>(p2.time_since_epoch()).count();
+		}
+
 		glBindFramebuffer(GL_READ_FRAMEBUFFER, gl.ofbo.fbo);
 		glReadPixels(0, 0, gl.ofbo.width, gl.ofbo.height, GL_RGB, GL_UNSIGNED_BYTE, img);
+
 		fwrite(img, 1, bytesz, video_file);
 		fflush(video_file);
+
+		delete[] img;
 	}
 
 	if (do_screenshot)
