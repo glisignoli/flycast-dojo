@@ -186,6 +186,7 @@ public:
 				{
 					std::lock_guard<std::mutex> guard(mutex);
 					game_list.clear();
+					arcade_game_list.clear();
 				}
 
 				if (config::ContentPath.get().size() == 0)
