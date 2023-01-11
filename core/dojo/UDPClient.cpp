@@ -140,9 +140,9 @@ uint64_t UDPClient::GetAvgPing(const char * ip_addr, int port)
 	return avg_ping_ms;
 }
 
-uint64_t UDPClient::GetOpponentAvgPing()
+uint64_t UDPClient::GetOpponentAvgPing(int num_requests)
 {
-	for (int i = 0; i < 5; i++)
+	for (int i = 0; i < num_requests; i++)
 	{
 		PingAddress(opponent_addr, i);
 	}
@@ -200,7 +200,7 @@ void UDPClient::SendDisconnectOK()
 void UDPClient::SendPlayerName()
 {
 	int use_net_save = ghc::filesystem::exists(dojo.net_save_path) && !config::IgnoreNetSave;
-	SendMsg("NAME " + config::PlayerName.get() + " " + std::to_string(use_net_save), host_addr);
+	SendMsg("NAME " + config::PlayerName.get() + " " + std::to_string(use_net_save), opponent_addr);
 }
 
 void UDPClient::SendNameOK()
@@ -211,7 +211,7 @@ void UDPClient::SendNameOK()
 void UDPClient::EndSession()
 {
 	gui_open_disconnected();
-	dc_stop();
+	emu.term();
 	CloseSocket(local_socket);
 #ifdef _WIN32
 	WSACleanup();
@@ -346,23 +346,42 @@ void UDPClient::ClientLoop()
 					std::string data = std::string(buffer + 8, strlen(buffer + 5));
 					std::vector<std::string> opp = stringfix::split(":", data);
 
-					if (!config::DojoActAsServer)
+					if (config::GGPOEnable)
 					{
-						config::DojoServerIP = opp[0];
-						//config::DojoServerPort = opp[1];
+						config::NetworkServer = opp[0];
+
+						opponent_addr.sin_family = AF_INET;
+						opponent_addr.sin_port = htons((u16)std::stol(opp[1]));
+						inet_pton(AF_INET, opp[0].data(), &opponent_addr.sin_addr);
+
+						if (!config::ActAsServer.get())
+						{
+							host_addr.sin_port = htons((u16)std::stol(opp[1]));
+							inet_pton(AF_INET, opp[0].data(), &host_addr.sin_addr);
+						}
+
+						SendPlayerName();
 					}
-
-					opponent_addr.sin_family = AF_INET;
-					opponent_addr.sin_port = htons((u16)std::stol(opp[1]));
-					inet_pton(AF_INET, opp[0].data(), &opponent_addr.sin_addr);
-
-					if (!config::DojoActAsServer)
+					else
 					{
-						host_addr.sin_port = htons((u16)std::stol(opp[1]));
-						inet_pton(AF_INET, opp[0].data(), &host_addr.sin_addr);
-					}
+						if (!config::DojoActAsServer)
+						{
+							config::DojoServerIP = opp[0];
+							//config::DojoServerPort = opp[1];
+						}
 
-					SendPlayerName();
+						opponent_addr.sin_family = AF_INET;
+						opponent_addr.sin_port = htons((u16)std::stol(opp[1]));
+						inet_pton(AF_INET, opp[0].data(), &opponent_addr.sin_addr);
+
+						if (!config::DojoActAsServer)
+						{
+							host_addr.sin_port = htons((u16)std::stol(opp[1]));
+							inet_pton(AF_INET, opp[0].data(), &host_addr.sin_addr);
+						}
+
+						SendPlayerName();
+					}
 				}
 			}
 
@@ -380,12 +399,12 @@ void UDPClient::ClientLoop()
 
 			if (memcmp("NAME", buffer, 4) == 0)
 			{
-				config::OpponentName = std::string(buffer + 5, strlen(buffer + 5));
+				settings.dojo.OpponentName = std::string(buffer + 5, strlen(buffer + 5));
 
 				std::string buffer_str(buffer + 5, strlen(buffer + 5));
 				auto tokens = stringfix::split(" ", buffer_str);
 
-				config::OpponentName = tokens[0];
+				settings.dojo.OpponentName = tokens[0];
 				dojo.net_save_present = (bool)atoi(tokens[1].data());
 				dojo.net_save_present = dojo.net_save_present && !config::IgnoreNetSave;
 
@@ -457,22 +476,31 @@ void UDPClient::ClientLoop()
 			}
 			if (memcmp("START", buffer, 5) == 0)
 			{
-				std::string buffer_str(buffer + 6, strlen(buffer + 6));
-				auto tokens = stringfix::split(" ", buffer_str);
-
-				int delay = atoi(tokens[0].data());
-				int ppf = atoi(tokens[1].data());
-				int nbf = atoi(tokens[2].data());
-				std::string op = tokens[3];
-				dojo.net_save_present = (bool)atoi(tokens[4].data());
-				dojo.net_save_present = dojo.net_save_present && !config::IgnoreNetSave;
-
-				config::OpponentName = op;
-
-				if (!dojo.session_started)
+				if (config::GGPOEnable)
 				{
-					// adopt host delay and payload settings
-					dojo.StartSession(delay, ppf, nbf);
+					// close dojo matching functions and hand over to ggpo
+					config::DojoEnable = false;
+					return;
+				}
+				else
+				{
+					std::string buffer_str(buffer + 6, strlen(buffer + 6));
+					auto tokens = stringfix::split(" ", buffer_str);
+
+					int delay = atoi(tokens[0].data());
+					int ppf = atoi(tokens[1].data());
+					int nbf = atoi(tokens[2].data());
+					std::string op = tokens[3];
+					dojo.net_save_present = (bool)atoi(tokens[4].data());
+					dojo.net_save_present = dojo.net_save_present && !config::IgnoreNetSave;
+
+					settings.dojo.OpponentName = op;
+
+					if (!dojo.session_started)
+					{
+						// adopt host delay and payload settings
+						dojo.StartSession(delay, ppf, nbf);
+					}
 				}
 			}
 
@@ -512,6 +540,11 @@ void UDPClient::ClientLoop()
 		SendDisconnect();
 }
 
+void UDPClient::CloseLocalSocket()
+{
+	CloseSocket(local_socket);
+}
+
 void UDPClient::ClientThread()
 {
 	Init(dojo.hosting);
@@ -520,12 +553,14 @@ void UDPClient::ClientThread()
 	// connect to matchmaking server
 	if (config::EnableMatchCode)
 	{
-		if (!config::DojoActAsServer)
+		if (!config::DojoActAsServer || (config::GGPOEnable && !config::ActAsServer))
 			while (dojo.MatchCode.empty());
 		ConnectMMServer();
 	}
 
 	ClientLoop();
-	EndSession();
+	// close dojo udp client when ggpo session is activated
+	if (!config::GGPOEnable)
+		EndSession();
 }
 

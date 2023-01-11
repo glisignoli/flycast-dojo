@@ -23,7 +23,7 @@
 #include "rend/osd.h"
 #include "quad.h"
 
-void PipelineManager::CreateModVolPipeline(ModVolMode mode, int cullMode)
+void PipelineManager::CreateModVolPipeline(ModVolMode mode, int cullMode, bool naomi2)
 {
 	// Vertex input state
 	vk::PipelineVertexInputStateCreateInfo pipelineVertexInputStateCreateInfo;
@@ -38,20 +38,12 @@ void PipelineManager::CreateModVolPipeline(ModVolMode mode, int cullMode)
 	}
 	else
 	{
-		static const vk::VertexInputBindingDescription vertexBindingDescriptions[] =
-		{
-				{ 0, sizeof(float) * 3 },
-		};
-		static const vk::VertexInputAttributeDescription vertexInputAttributeDescriptions[] =
-		{
-				vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32B32Sfloat, 0),	// pos
-		};
+		static const vk::VertexInputBindingDescription vertexBindingDescription(0, sizeof(float) * 3);
+		static const vk::VertexInputAttributeDescription vertexInputAttributeDescription(0, 0, vk::Format::eR32G32B32Sfloat, 0);	// pos
 		pipelineVertexInputStateCreateInfo = vk::PipelineVertexInputStateCreateInfo(
 				vk::PipelineVertexInputStateCreateFlags(),
-				ARRAY_SIZE(vertexBindingDescriptions),
-				vertexBindingDescriptions,
-				ARRAY_SIZE(vertexInputAttributeDescriptions),
-				vertexInputAttributeDescriptions);
+				vertexBindingDescription,
+				vertexInputAttributeDescription);
 		pipelineInputAssemblyStateCreateInfo = vk::PipelineInputAssemblyStateCreateInfo(vk::PipelineInputAssemblyStateCreateFlags(),
 				vk::PrimitiveTopology::eTriangleList);
 	}
@@ -130,26 +122,25 @@ void PipelineManager::CreateModVolPipeline(ModVolMode mode, int cullMode)
 		vk::PipelineColorBlendStateCreateFlags(),   // flags
 		false,                                      // logicOpEnable
 		vk::LogicOp::eNoOp,                         // logicOp
-		1,                                          // attachmentCount
-		&pipelineColorBlendAttachmentState,         // pAttachments
+		pipelineColorBlendAttachmentState,         // attachments
 		{ { 1.0f, 1.0f, 1.0f, 1.0f } }              // blendConstants
 	);
 
-	vk::DynamicState dynamicStates[2] = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
-	vk::PipelineDynamicStateCreateInfo pipelineDynamicStateCreateInfo(vk::PipelineDynamicStateCreateFlags(), 2, dynamicStates);
+	std::array<vk::DynamicState, 2> dynamicStates = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+	vk::PipelineDynamicStateCreateInfo pipelineDynamicStateCreateInfo(vk::PipelineDynamicStateCreateFlags(), dynamicStates);
 
-	vk::ShaderModule vertex_module = shaderManager->GetModVolVertexShader();
-	vk::ShaderModule fragment_module = shaderManager->GetModVolShader();
+	ModVolShaderParams shaderParams { naomi2, !settings.platform.isNaomi2() && config::NativeDepthInterpolation };
+	vk::ShaderModule vertex_module = shaderManager->GetModVolVertexShader(shaderParams);
+	vk::ShaderModule fragment_module = shaderManager->GetModVolShader(!settings.platform.isNaomi2() && config::NativeDepthInterpolation);
 
-	vk::PipelineShaderStageCreateInfo stages[] = {
-			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex, vertex_module, "main" },
-			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, fragment_module, "main" },
+	std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
+			vk::PipelineShaderStageCreateInfo(vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex, vertex_module, "main"),
+			vk::PipelineShaderStageCreateInfo(vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, fragment_module, "main"),
 	};
 	vk::GraphicsPipelineCreateInfo graphicsPipelineCreateInfo
 	(
 	  vk::PipelineCreateFlags(),                  // flags
-	  2,                                          // stageCount
-	  stages,                                     // pStages
+	  stages,                                     // stages
 	  &pipelineVertexInputStateCreateInfo,        // pVertexInputState
 	  &pipelineInputAssemblyStateCreateInfo,      // pInputAssemblyState
 	  nullptr,                                    // pTessellationState
@@ -163,9 +154,111 @@ void PipelineManager::CreateModVolPipeline(ModVolMode mode, int cullMode)
 	  renderPass                                  // renderPass
 	);
 
-	modVolPipelines[hash(mode, cullMode)] =
+	modVolPipelines[hash(mode, cullMode, naomi2)] =
 			GetContext()->GetDevice().createGraphicsPipelineUnique(GetContext()->GetPipelineCache(),
-					graphicsPipelineCreateInfo);
+					graphicsPipelineCreateInfo).value;
+}
+
+void PipelineManager::CreateDepthPassPipeline(int cullMode, bool naomi2)
+{
+	// Vertex input state
+	vk::PipelineVertexInputStateCreateInfo pipelineVertexInputStateCreateInfo = GetMainVertexInputStateCreateInfo(false);
+	// Input assembly state
+	vk::PipelineInputAssemblyStateCreateInfo pipelineInputAssemblyStateCreateInfo
+	(
+			vk::PipelineInputAssemblyStateCreateFlags(),
+			vk::PrimitiveTopology::eTriangleList
+	);
+
+	// Viewport and scissor states
+	vk::PipelineViewportStateCreateInfo pipelineViewportStateCreateInfo(vk::PipelineViewportStateCreateFlags(), 1, nullptr, 1, nullptr);
+
+	// Rasterization and multisample states
+	vk::PipelineRasterizationStateCreateInfo pipelineRasterizationStateCreateInfo
+	(
+	  vk::PipelineRasterizationStateCreateFlags(),  // flags
+	  false,                                        // depthClampEnable
+	  false,                                        // rasterizerDiscardEnable
+	  vk::PolygonMode::eFill,                       // polygonMode
+	  cullMode == 3 ? vk::CullModeFlagBits::eBack
+			  : cullMode == 2 ? vk::CullModeFlagBits::eFront
+			  : vk::CullModeFlagBits::eNone,        // cullMode
+	  vk::FrontFace::eCounterClockwise,             // frontFace
+	  false,                                        // depthBiasEnable
+	  0.0f,                                         // depthBiasConstantFactor
+	  0.0f,                                         // depthBiasClamp
+	  0.0f,                                         // depthBiasSlopeFactor
+	  1.0f                                          // lineWidth
+	);
+	vk::PipelineMultisampleStateCreateInfo pipelineMultisampleStateCreateInfo;
+
+	// Depth and stencil
+	vk::StencilOpState stencilOpState;
+	vk::PipelineDepthStencilStateCreateInfo pipelineDepthStencilStateCreateInfo
+	(
+	  vk::PipelineDepthStencilStateCreateFlags(), // flags
+	  true,                                       // depthTestEnable
+	  true,                                       // depthWriteEnable
+	  vk::CompareOp::eGreaterOrEqual,             // depthCompareOp
+	  false,                                      // depthBoundTestEnable
+	  false,                                      // stencilTestEnable
+	  stencilOpState,                             // front
+	  stencilOpState                              // back
+	);
+
+	// Color flags and blending
+	vk::ColorComponentFlags colorComponentFlags((vk::ColorComponentFlagBits)0);
+	vk::PipelineColorBlendAttachmentState pipelineColorBlendAttachmentState(
+		false,                              // blendEnable
+		vk::BlendFactor::eZero,             // srcColorBlendFactor
+		vk::BlendFactor::eZero,             // dstColorBlendFactor
+		vk::BlendOp::eAdd,                  // colorBlendOp
+		vk::BlendFactor::eZero,             // srcAlphaBlendFactor
+		vk::BlendFactor::eZero,             // dstAlphaBlendFactor
+		vk::BlendOp::eAdd,                  // alphaBlendOp
+		colorComponentFlags                 // colorWriteMask
+	);
+
+	vk::PipelineColorBlendStateCreateInfo pipelineColorBlendStateCreateInfo
+	(
+		vk::PipelineColorBlendStateCreateFlags(),   // flags
+		false,                                      // logicOpEnable
+		vk::LogicOp::eNoOp,                         // logicOp
+		pipelineColorBlendAttachmentState,         // attachments
+		{ { 1.0f, 1.0f, 1.0f, 1.0f } }              // blendConstants
+	);
+
+	std::array<vk::DynamicState, 2> dynamicStates = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+	vk::PipelineDynamicStateCreateInfo pipelineDynamicStateCreateInfo(vk::PipelineDynamicStateCreateFlags(), dynamicStates);
+
+	ModVolShaderParams shaderParams { naomi2, !settings.platform.isNaomi2() && config::NativeDepthInterpolation };
+	vk::ShaderModule vertex_module = shaderManager->GetModVolVertexShader(shaderParams);
+	vk::ShaderModule fragment_module = shaderManager->GetModVolShader(!settings.platform.isNaomi2() && config::NativeDepthInterpolation);
+
+	std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
+			vk::PipelineShaderStageCreateInfo(vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex, vertex_module, "main"),
+			vk::PipelineShaderStageCreateInfo(vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, fragment_module, "main"),
+	};
+	vk::GraphicsPipelineCreateInfo graphicsPipelineCreateInfo
+	(
+	  vk::PipelineCreateFlags(),                  // flags
+	  stages,                                     // stages
+	  &pipelineVertexInputStateCreateInfo,        // pVertexInputState
+	  &pipelineInputAssemblyStateCreateInfo,      // pInputAssemblyState
+	  nullptr,                                    // pTessellationState
+	  &pipelineViewportStateCreateInfo,           // pViewportState
+	  &pipelineRasterizationStateCreateInfo,      // pRasterizationState
+	  &pipelineMultisampleStateCreateInfo,        // pMultisampleState
+	  &pipelineDepthStencilStateCreateInfo,       // pDepthStencilState
+	  &pipelineColorBlendStateCreateInfo,         // pColorBlendState
+	  &pipelineDynamicStateCreateInfo,            // pDynamicState
+	  *pipelineLayout,                            // layout
+	  renderPass                                  // renderPass
+	);
+
+	depthPassPipelines[hash(cullMode, naomi2)] =
+			GetContext()->GetDevice().createGraphicsPipelineUnique(GetContext()->GetPipelineCache(),
+					graphicsPipelineCreateInfo).value;
 }
 
 void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const PolyParam& pp, bool gpuPalette)
@@ -207,7 +300,7 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	bool depthWriteEnable;
 	if (sortTriangles && !config::PerStripSorting)
 		// FIXME temporary work-around for intel driver bug
-		depthWriteEnable = GetContext()->GetVendorID() == VENDOR_INTEL;
+		depthWriteEnable = GetContext()->GetVendorID() == VulkanContext::VENDOR_INTEL;
 	else
 	{
 		// Z Write Disable seems to be ignored for punch-through.
@@ -281,19 +374,19 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	  vk::PipelineColorBlendStateCreateFlags(),   // flags
 	  false,                                      // logicOpEnable
 	  vk::LogicOp::eNoOp,                         // logicOp
-	  1,                                          // attachmentCount
-	  &pipelineColorBlendAttachmentState,         // pAttachments
+	  pipelineColorBlendAttachmentState,         // attachments
 	  { { 1.0f, 1.0f, 1.0f, 1.0f } }              // blendConstants
 	);
 
 	vk::DynamicState dynamicStates[2] = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
 	vk::PipelineDynamicStateCreateInfo pipelineDynamicStateCreateInfo(vk::PipelineDynamicStateCreateFlags(), 2, dynamicStates);
 
-	vk::ShaderModule vertex_module = shaderManager->GetVertexShader(VertexShaderParams{ pp.pcw.Gouraud == 1 });
+	bool divPosZ = !settings.platform.isNaomi2() && config::NativeDepthInterpolation;
+	vk::ShaderModule vertex_module = shaderManager->GetVertexShader(VertexShaderParams { pp.pcw.Gouraud == 1, pp.isNaomi2(), divPosZ });
 	FragmentShaderParams params = {};
 	params.alphaTest = listType == ListType_Punch_Through;
 	params.bumpmap = pp.tcw.PixelFmt == PixelBumpMap;
-	params.clamping = pp.tsp.ColorClamp && (pvrrc.fog_clamp_min != 0 || pvrrc.fog_clamp_max != 0xffffffff);
+	params.clamping = pp.tsp.ColorClamp && (pvrrc.fog_clamp_min.full != 0 || pvrrc.fog_clamp_max.full != 0xffffffff);
 	params.insideClipTest = (pp.tileclip >> 28) == 3;
 	params.fog = config::Fog ? pp.tsp.FogCtrl : 2;
 	params.gouraud = pp.pcw.Gouraud;
@@ -304,17 +397,17 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	params.trilinear = pp.pcw.Texture && pp.tsp.FilterMode > 1 && listType != ListType_Punch_Through && pp.tcw.MipMapped == 1;
 	params.useAlpha = pp.tsp.UseAlpha;
 	params.palette = gpuPalette;
+	params.divPosZ = divPosZ;
 	vk::ShaderModule fragment_module = shaderManager->GetFragmentShader(params);
 
-	vk::PipelineShaderStageCreateInfo stages[] = {
-			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex, vertex_module, "main" },
-			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, fragment_module, "main" },
+	std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
+			vk::PipelineShaderStageCreateInfo(vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex, vertex_module, "main"),
+			vk::PipelineShaderStageCreateInfo(vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, fragment_module, "main"),
 	};
 	vk::GraphicsPipelineCreateInfo graphicsPipelineCreateInfo
 	(
 	  vk::PipelineCreateFlags(),                  // flags
-	  2,                                          // stageCount
-	  stages,                                     // pStages
+	  stages,                                     // stages
 	  &pipelineVertexInputStateCreateInfo,        // pVertexInputState
 	  &pipelineInputAssemblyStateCreateInfo,      // pInputAssemblyState
 	  nullptr,                                    // pTessellationState
@@ -329,27 +422,21 @@ void PipelineManager::CreatePipeline(u32 listType, bool sortTriangles, const Pol
 	);
 
 	pipelines[hash(listType, sortTriangles, &pp, gpuPalette)] = GetContext()->GetDevice().createGraphicsPipelineUnique(GetContext()->GetPipelineCache(),
-			graphicsPipelineCreateInfo);
+			graphicsPipelineCreateInfo).value;
 }
 
 void OSDPipeline::CreatePipeline()
 {
 	// Vertex input state
-	static const vk::VertexInputBindingDescription vertexBindingDescriptions[] =
-	{
-		{ 0, sizeof(OSDVertex) },
-	};
-	static const vk::VertexInputAttributeDescription vertexInputAttributeDescriptions[] =
-	{
+	static const vk::VertexInputBindingDescription vertexInputBindingDescription(0, sizeof(OSDVertex));
+	static const std::array<vk::VertexInputAttributeDescription, 3> vertexInputAttributeDescriptions = {
 			vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32Sfloat, offsetof(OSDVertex, x)),	// pos
 			vk::VertexInputAttributeDescription(1, 0, vk::Format::eR8G8B8A8Uint, offsetof(OSDVertex, r)),	// color
 			vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32Sfloat, offsetof(OSDVertex, u)),	// tex coord
 	};
 	vk::PipelineVertexInputStateCreateInfo vertexInputStateCreateInfo(
 				vk::PipelineVertexInputStateCreateFlags(),
-				ARRAY_SIZE(vertexBindingDescriptions),
-				vertexBindingDescriptions,
-				ARRAY_SIZE(vertexInputAttributeDescriptions),
+				vertexInputBindingDescription,
 				vertexInputAttributeDescriptions);
 
 	// Input assembly state
@@ -383,24 +470,21 @@ void OSDPipeline::CreatePipeline()
 	  vk::PipelineColorBlendStateCreateFlags(),   // flags
 	  false,                                      // logicOpEnable
 	  vk::LogicOp::eNoOp,                         // logicOp
-	  1,                                          // attachmentCount
-	  &pipelineColorBlendAttachmentState,         // pAttachments
+	  pipelineColorBlendAttachmentState,         // attachments
 	  { { 1.0f, 1.0f, 1.0f, 1.0f } }              // blendConstants
 	);
 
-	vk::DynamicState dynamicStates[] = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
-	vk::PipelineDynamicStateCreateInfo pipelineDynamicStateCreateInfo(vk::PipelineDynamicStateCreateFlags(), ARRAY_SIZE(dynamicStates),
-			dynamicStates);
+	std::array<vk::DynamicState, 2> dynamicStates = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+	vk::PipelineDynamicStateCreateInfo pipelineDynamicStateCreateInfo(vk::PipelineDynamicStateCreateFlags(), dynamicStates);
 
-	vk::PipelineShaderStageCreateInfo stages[] = {
-			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex, shaderManager->GetOSDVertexShader(), "main" },
-			{ vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, shaderManager->GetOSDFragmentShader(), "main" },
+	std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
+			vk::PipelineShaderStageCreateInfo(vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex, shaderManager->GetOSDVertexShader(), "main"),
+			vk::PipelineShaderStageCreateInfo(vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment, shaderManager->GetOSDFragmentShader(), "main"),
 	};
 	vk::GraphicsPipelineCreateInfo graphicsPipelineCreateInfo
 	(
 	  vk::PipelineCreateFlags(),                  // flags
-	  2,                                          // stageCount
-	  stages,                                     // pStages
+	  stages,                                     // stages
 	  &vertexInputStateCreateInfo,			      // pVertexInputState
 	  &pipelineInputAssemblyStateCreateInfo,      // pInputAssemblyState
 	  nullptr,                                    // pTessellationState
@@ -411,9 +495,8 @@ void OSDPipeline::CreatePipeline()
 	  &pipelineColorBlendStateCreateInfo,         // pColorBlendState
 	  &pipelineDynamicStateCreateInfo,            // pDynamicState
 	  *pipelineLayout,                            // layout
-	  renderPass,                                 // renderPass
-	  0                                           // subpass
+	  renderPass                                  // renderPass
 	);
 
-	pipeline = GetContext()->GetDevice().createGraphicsPipelineUnique(GetContext()->GetPipelineCache(), graphicsPipelineCreateInfo);
+	pipeline = GetContext()->GetDevice().createGraphicsPipelineUnique(GetContext()->GetPipelineCache(), graphicsPipelineCreateInfo).value;
 }

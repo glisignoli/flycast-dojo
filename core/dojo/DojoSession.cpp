@@ -18,7 +18,7 @@ void DojoSession::Init()
 	host_port = 7777;
 	delay = 1;
 
-	if (config::Training)
+	if (settings.dojo.training)
 		player = 0;
 	else
 		player = config::DojoActAsServer ? 0 : 1;
@@ -28,6 +28,8 @@ void DojoSession::Init()
 	session_started = false;
 
 	FrameNumber = 2;
+	last_consecutive_common_frame = 2;
+
 	isPaused = true;
 
 	MaxPlayers = 2;
@@ -39,7 +41,6 @@ void DojoSession::Init()
 	DojoLobby presence;
 
 	client_input_authority = true;
-	last_consecutive_common_frame = 2;
 	started = false;
 
 	spectating = false;
@@ -97,6 +98,40 @@ void DojoSession::Init()
 	MessageWriter replay_msg;
 
 	received_player_info = false;
+	upnp_started = false;
+}
+
+void DojoSession::CleanUp()
+{
+	if (!config::MatchCode.get().empty())
+		dojo.MatchCode = "";
+
+	if (!config::NetworkServer.get().empty())
+		config::NetworkServer = "";
+
+	if (!config::DojoServerIP.get().empty())
+		config::DojoServerIP = "";
+
+	if (config::PlayerSwitched)
+		dojo.SwitchPlayer();
+
+	//if (settings.dojo.training)
+		dojo.ResetTraining();
+
+	if (settings.network.online)
+	{
+		dojo.client.CloseLocalSocket();
+		dojo.client.name_acknowledged = false;
+	}
+
+	for (int i = 0; i < 4; i++)
+		dojo.net_inputs[i].clear();
+
+	dojo.maple_inputs.clear();
+
+	stepping = false;
+	manual_pause = false;
+	buffering = false;
 }
 
 uint64_t DojoSession::DetectDelay(const char* ipAddr)
@@ -105,6 +140,16 @@ uint64_t DojoSession::DetectDelay(const char* ipAddr)
 
 	int delay = (int)ceil(((int)avg_ping_ms * 1.0f) / 32.0f);
 	config::Delay = delay > 1 ? delay : 1;
+
+	return avg_ping_ms;
+}
+
+uint64_t DojoSession::DetectGGPODelay(const char* ipAddr)
+{
+	uint64_t avg_ping_ms = client.GetOpponentAvgPing();
+
+	int delay = (int)ceil(((int)avg_ping_ms * 1.0f) / 32.0f) - 3;
+	config::GGPODelay = delay > 0 ? delay : 0;
 
 	return avg_ping_ms;
 }
@@ -141,6 +186,11 @@ u32 DojoSession::GetFrameNumber(u8* data)
 u32 DojoSession::GetEffectiveFrameNumber(u8* data)
 {
 	return GetFrameNumber(data) + GetDelay(data);
+}
+
+u32 DojoSession::GetMapleFrameNumber(u8* data)
+{
+	return (int)(*(u32*)(data));
 }
 
 void DojoSession::AddNetFrame(const char* received_data)
@@ -252,7 +302,7 @@ void DojoSession::resume()
 
 void DojoSession::StartSession(int session_delay, int session_ppf, int session_num_bf)
 {
-	if (config::RecordMatches && !dojo.PlayMatch)
+	if (config::RecordMatches && !dojo.PlayMatch && !config::Receiving)
 		CreateReplayFile();
 
 	FillDelay(session_delay);
@@ -269,6 +319,11 @@ void DojoSession::StartSession(int session_delay, int session_ppf, int session_n
 	dojo.resume();
 
 	INFO_LOG(NETWORK, "Session Initiated");
+}
+
+void DojoSession::StartGGPOSession()
+{
+	client.StartSession();
 }
 
 void DojoSession::FillDelay(int fill_delay)
@@ -331,6 +386,26 @@ void DojoSession::StartTransmitterThread()
 	}
 }
 
+void DojoSession::LaunchReceiver()
+{
+	if (!receiver_started)
+	{
+		if (config::DojoActAsServer)
+		{
+			std::thread t5(&DojoSession::receiver_thread, std::ref(dojo));
+			t5.detach();
+		}
+		else
+		{
+			std::thread t5(&DojoSession::receiver_client_thread, std::ref(dojo));
+			t5.detach();
+		}
+
+		receiver_started = true;
+	}
+
+}
+
 int DojoSession::StartDojoSession()
 {
 	net_save_path = get_net_savestate_file_path(false);
@@ -342,39 +417,15 @@ int DojoSession::StartDojoSession()
 		config::Receiving = true;
 
 	if (config::Receiving)
+	{
 		receiving = true;
+	}
 
 	if (dojo.PlayMatch)
 	{
-		if (config::TransmitReplays)
-			StartTransmitterThread();
-		FillDelay(1);
-		LoadReplayFile(dojo.ReplayFilename);
-		//resume();
+		resume();
 	}
-	else if (config::Receiving)
-	{
-		dojo.last_consecutive_common_frame = 2;
-		dojo.FrameNumber = 2;
-		dojo.FillDelay(2);
-
-		if (!receiver_started)
-		{
-			if (config::DojoActAsServer)
-			{
-				std::thread t5(&DojoSession::receiver_thread, std::ref(dojo));
-				t5.detach();
-			}
-			else
-			{
-				std::thread t5(&DojoSession::receiver_client_thread, std::ref(dojo));
-				t5.detach();
-			}
-
-			receiver_started = true;
-		}
-	}
-	else
+	else if (!config::Receiving)
 	{
 		LoadNetConfig();
 
@@ -416,7 +467,7 @@ u16 DojoSession::ApplyNetInputs(PlainJoystickState* pjs, u16 buttons, u32 port)
 
 	if (FrameNumber == 2)
 	{
-		if (dojo.PlayMatch)
+		if (dojo.PlayMatch && !config::GGPOEnable)
 		{
 			resume();
 		}
@@ -444,8 +495,8 @@ u16 DojoSession::ApplyNetInputs(PlainJoystickState* pjs, u16 buttons, u32 port)
 		}
 	}
 
-
-	if (FrameNumber == 3)
+	/*
+	if (FrameNumber == 3 && !config::GGPOEnable && !settings.online)
 	{
 		std::string net_save_path = get_net_savestate_file_path(false);
 		if (dojo.net_save_present && ghc::filesystem::exists(net_save_path))
@@ -453,6 +504,7 @@ u16 DojoSession::ApplyNetInputs(PlainJoystickState* pjs, u16 buttons, u32 port)
 			jump_state_requested = true;
 		}
 	}
+	*/
 
 	if (config::Receiving &&
 		receiver_ended &&
@@ -467,6 +519,12 @@ u16 DojoSession::ApplyNetInputs(PlainJoystickState* pjs, u16 buttons, u32 port)
 	if (port == 0)
 	{
 		FrameNumber++;
+
+		if (PlayMatch && stepping)
+		{
+			emu.stop();
+			gui_state = GuiState::ReplayPause;
+		}
 
 		if (config::Receiving &&
 			receiver_ended &&
@@ -536,17 +594,6 @@ u16 DojoSession::ApplyNetInputs(PlainJoystickState* pjs, u16 buttons, u32 port)
 	// inputs captured and synced in client thread
 	std::string this_frame = "";
 
-	if (dojo.PlayMatch &&
-		(FrameNumber >= net_input_keys[0].size() ||
-			FrameNumber >= net_input_keys[1].size()))
-	{
-		if (config::Transmitting)
-			transmitter_ended = true;
-
-		gui_state = GuiState::EndReplay;
-		config::AutoSkipFrame = 1;
-		dc_stop();
-	}
 /*
 	if (config::Receiving &&
 		dojo.receiver.endSession)
@@ -601,11 +648,13 @@ u16 DojoSession::ApplyNetInputs(PlainJoystickState* pjs, u16 buttons, u32 port)
 				NOTICE_LOG(NETWORK, "DOJO: > frame timeout, ending receiver");
 			}
 
+			/*
 			if (config::Receiving &&
 				FrameNumber >= last_consecutive_common_frame)
 			{
 				pause();
 			}
+			*/
 
 		};
 	}
@@ -629,6 +678,11 @@ u16 DojoSession::ApplyNetInputs(PlainJoystickState* pjs, u16 buttons, u32 port)
 		TranslateFrameDataToInput((u8*)to_apply.data(), pjs);
 	else
 		buttons = TranslateFrameDataToInput((u8*)to_apply.data(), buttons);
+
+	if (dojo.PlayMatch && replay_version == 1)
+	{
+		dojo.AddToInputDisplay((u8*)to_apply.data());
+	}
 
 	if (settings.platform.system == DC_PLATFORM_DREAMCAST ||
 		settings.platform.system == DC_PLATFORM_ATOMISWAVE)
@@ -695,21 +749,23 @@ std::string DojoSession::CreateReplayFile(std::string rom_name, int version)
 		"replays/" + rom_name + "__" +
 		timestamp + "__" +
 		config::PlayerName.get() + "__" +
-		config::OpponentName.get() + "__";
+		settings.dojo.OpponentName + "__";
 
 	if (version == 0)
 		filename.append(".flyreplay");
-	else if (version == 1)
+	else if (version >= 1)
 		filename.append(".flyr");
+
+	std::string path = get_writable_config_path("") + "/" + filename;
 
 	// create replay file itself
 	std::ofstream file;
-	file.open(filename);
+	file.open(path);
 
-	dojo.ReplayFilename = filename;
-	dojo.replay_filename = filename;
+	dojo.ReplayFilename = path;
+	dojo.replay_filename = path;
 
-	if (version == 1)
+	if (version > 0)
 		AppendHeaderToReplayFile(rom_name);
 
 	return filename;
@@ -725,7 +781,8 @@ void DojoSession::AppendHeaderToReplayFile(std::string rom_name)
 	spectate_start.AppendHeader(1, SPECTATE_START);
 
 	// version
-	spectate_start.AppendInt(1);
+	u32 version = config::GGPOEnable ? 3 : 1;
+	spectate_start.AppendInt(version);
 	if (rom_name == "")
 		spectate_start.AppendString(get_game_name());
 	else
@@ -735,6 +792,17 @@ void DojoSession::AppendHeaderToReplayFile(std::string rom_name)
 
 	spectate_start.AppendString(config::Quark.get());
 	spectate_start.AppendString(config::MatchCode.get());
+
+	u32 analog = 0;
+	if (settings.platform.system == DC_PLATFORM_DREAMCAST && config::GGPOEnable)
+		analog = (u32)config::GGPOAnalogAxes.get();
+	spectate_start.AppendInt(analog);
+
+	if (version == 3)
+	{
+		spectate_start.AppendString(settings.dojo.state_md5);
+		spectate_start.AppendString(settings.dojo.state_commit);
+	}
 
 	std::vector<unsigned char> message = spectate_start.Msg();
 
@@ -789,10 +857,52 @@ void DojoSession::AppendToReplayFile(std::string frame, int version)
 
 				replay_msg = MessageWriter();
 				replay_msg.AppendHeader(0, GAME_BUFFER);
+
 				replay_msg.AppendInt(FRAME_SIZE);
 			}
 
 			if (memcmp(frame.data(), "000000000000", FRAME_SIZE) == 0)
+			{
+				// send remaining frames
+				if (replay_frame_count % FRAME_BATCH > 0)
+				{
+					std::vector<unsigned char> message = replay_msg.Msg();
+					fout.write((const char*)&message[0], message.size());
+				}
+			}
+		}
+
+		fout.close();
+	}
+	else if (frame.size() == MAPLE_FRAME_SIZE)
+	{
+		// append frame data to replay file
+		std::ofstream fout(replay_filename,
+			std::ios::out | std::ios::binary | std::ios_base::app);
+
+		if (version >= 2)
+		{
+			if (replay_frame_count == 0)
+			{
+				replay_msg = MessageWriter();
+				replay_msg.AppendHeader(0, MAPLE_BUFFER);
+				replay_msg.AppendInt(MAPLE_FRAME_SIZE);
+			}
+
+			replay_msg.AppendContinuousData(frame.data(), MAPLE_FRAME_SIZE);
+			replay_frame_count++;
+
+			if (replay_frame_count % FRAME_BATCH == 0)
+			{
+				std::vector<unsigned char> message = replay_msg.Msg();
+				fout.write((const char*)&message[0], message.size());
+
+				replay_msg = MessageWriter();
+				replay_msg.AppendHeader(0, MAPLE_BUFFER);
+				replay_msg.AppendInt(MAPLE_FRAME_SIZE);
+			}
+
+			if (memcmp(frame.data(), "0000000000000000", MAPLE_FRAME_SIZE) == 0)
 			{
 				// send remaining frames
 				if (replay_frame_count % FRAME_BATCH > 0)
@@ -820,8 +930,9 @@ void DojoSession::LoadReplayFileV0(std::string path)
 	std::string ppath = path;
 	stringfix::replace(ppath, "__", ":");
 	std::vector<std::string> name_info = stringfix::split(":", ppath);
-	config::PlayerName = name_info[3];
-	config::OpponentName = name_info[4];
+	settings.dojo.PlayerName = name_info[3];
+	settings.dojo.OpponentName = name_info[4];
+	AssignNames();
 
 	// add string in increments of FRAME_SIZE to net_inputs
 	std::ifstream fin(path, 
@@ -867,23 +978,51 @@ void DojoSession::ProcessBody(unsigned int cmd, unsigned int body_size, const ch
 		std::string OpponentName = MessageReader::ReadString((const char*)buffer, offset);
 		std::string Quark = MessageReader::ReadString((const char*)buffer, offset);
 		std::string MatchCode = MessageReader::ReadString((const char*)buffer, offset);
+		unsigned int analog = MessageReader::ReadInt((const char*)buffer, offset);
 
-		dojo.game_name = GameName;
+		replay_version = v;
+		game_name = GameName;
 		config::Quark = Quark;
 		config::MatchCode = MatchCode;
+
+		if (replay_version >= 3)
+		{
+			settings.dojo.state_md5 = MessageReader::ReadString((const char*)buffer, offset);
+			settings.dojo.state_commit = MessageReader::ReadString((const char*)buffer, offset);
+		}
+
+		std::cout << "Replay Version: " << replay_version << std::endl;
+
+		if (replay_version >= 2)
+		{
+			replay_analog = analog;
+			last_consecutive_common_frame = 0;
+			FrameNumber = 0;
+		}
+		else
+			replay_analog = 0;
+
+		//std::cout << "REPLAY VERSION " << replay_version << "ANALOG " << replay_analog << std::endl;
 
 		std::cout << "Game: " << GameName << std::endl;
 
 		if (!received_player_info)
 		{
-			config::PlayerName = PlayerName;
-			config::OpponentName = OpponentName;
+			settings.dojo.PlayerName = PlayerName;
+			settings.dojo.OpponentName = OpponentName;
+			AssignNames();
 			std::cout << "Player: " << PlayerName << std::endl;
 			std::cout << "Opponent: " << OpponentName << std::endl;
 		}
 
 		std::cout << "Quark: " << Quark << std::endl;
 		std::cout << "Match Code: " << MatchCode << std::endl;
+
+		if (replay_version == 3)
+		{
+			std::cout << "Savestate MD5: " << settings.dojo.state_md5 << std::endl;
+			std::cout << "Savestate Commit SHA: " << settings.dojo.state_commit << std::endl;
+		}
 
 		dojo.receiver_header_read = true;
 		dojo.receiver_start_read = true;
@@ -896,13 +1035,15 @@ void DojoSession::ProcessBody(unsigned int cmd, unsigned int body_size, const ch
 		auto player_name = p1_info[0];
 		auto opponent_name = p2_info[0];
 
-		received_player_info = true;
-
 		std::cout << "P1: " << player_name << std::endl;
 		std::cout << "P2: " << opponent_name << std::endl;
 
-		config::PlayerName = player_name;
-		config::OpponentName = opponent_name;
+		settings.dojo.PlayerName = player_name;
+		settings.dojo.OpponentName = opponent_name;
+
+		received_player_info = true;
+
+		AssignNames();
 	}
 	else if (cmd == GAME_BUFFER)
 	{
@@ -930,6 +1071,49 @@ void DojoSession::ProcessBody(unsigned int cmd, unsigned int body_size, const ch
 				if (dojo.net_inputs[1].size() == config::RxFrameBuffer.get() &&
 					dojo.FrameNumber < dojo.last_consecutive_common_frame)
 					dojo.resume();
+			}
+		}
+	}
+	else if (cmd == MAPLE_BUFFER)
+	{
+		unsigned int frame_size = MessageReader::ReadInt((const char*)buffer, offset);
+
+		// read frames
+		while (*offset < body_size)
+		{
+			std::string frame = MessageReader::ReadContinuousData((const char*)buffer, offset, frame_size);
+
+			//if (memcmp(frame.data(), { 0 }, FRAME_SIZE) == 0)
+			if (memcmp(frame.data(), "00000000000000000000", MAPLE_FRAME_SIZE) == 0)
+			{
+				dojo.receiver_ended = true;
+			}
+			else
+			{
+				u32 frame_num = dojo.GetMapleFrameNumber((u8*)frame.data());
+				std::string maple_input(frame.data() + 4, (MAPLE_FRAME_SIZE - 4));
+				std::vector<u8> inputs(maple_input.begin(), maple_input.end());
+
+				dojo.maple_inputs[frame_num] = inputs;
+
+				/*
+				std::cout << "GGPO FRAME " << frame_num << " ";
+
+				for (int i = 0; i < (MAPLE_FRAME_SIZE - 4); i++)
+				{
+				  std::bitset<8> b(inputs[i]);
+				  std::cout << b.to_string();
+				}
+
+				std::cout << std::endl;
+				*/
+
+				// buffer stream
+				/*
+				if (dojo.maple_inputs.size() == config::RxFrameBuffer.get() &&
+					dojo.FrameNumber < dojo.last_consecutive_common_frame)
+					dojo.resume();
+					*/
 			}
 		}
 	}
@@ -1008,6 +1192,7 @@ void DojoSession::receiver_thread()
 
 void DojoSession::receiver_client_thread()
 {
+	//std::cout << "START FRAME " << dojo.FrameNumber << std::endl;
 	try
 	{
 		receiver_ended = false;
@@ -1015,14 +1200,14 @@ void DojoSession::receiver_client_thread()
 
 		tcp::resolver resolver(io_context);
 		tcp::resolver::results_type endpoints =
-			resolver.resolve(config::SpectatorIP, config::SpectatorPort);
+			resolver.resolve(config::SpectatorIP.get(), config::SpectatorPort.get());
 
 		tcp::socket socket(io_context);
 		asio::connect(socket, endpoints);
 
 		MessageWriter spectate_request;
 
-		spectate_request.AppendHeader(1, 4);
+		spectate_request.AppendHeader(1, SPECTATE_REQUEST);
 
 		spectate_request.AppendString(config::Quark.get());
 		spectate_request.AppendString(config::MatchCode.get());
@@ -1038,18 +1223,40 @@ void DojoSession::receiver_client_thread()
 		{
 			// read header
 			memset((void*)header_buf, 0, HEADER_LEN);
-			asio::read(socket, asio::buffer(header_buf, HEADER_LEN));
+			try
+			{
+				asio::read(socket, asio::buffer(header_buf, HEADER_LEN));
+			}
+			catch (const std::system_error& e)
+			{
+				receiver_ended = true;
+				break;
+			}
 
 			unsigned int body_size = HeaderReader::GetSize((unsigned char*)header_buf);
 			unsigned int cmd = HeaderReader::GetCmd((unsigned char*)header_buf);
 
 			// read body
 			body_buf.resize(body_size);
-			asio::read(socket, asio::buffer(body_buf, body_size));
+
+			try
+			{
+				asio::read(socket, asio::buffer(body_buf, body_size));
+			}
+			catch (const std::system_error& e)
+			{
+				receiver_ended = true;
+				break;
+			}
 
 			offset = 0;
 
 			dojo.ProcessBody(cmd, body_size, (const char*)body_buf.data(), &offset);
+
+			if (maple_inputs.size() > config::RxFrameBuffer.get())
+			{
+				resume();
+			}
 		}
 	}
 	catch (std::exception& e)
@@ -1062,11 +1269,17 @@ void DojoSession::transmitter_thread()
 {
 	try
 	{
+		std::this_thread::sleep_for(std::chrono::seconds(1));
+		if (config::SpectatorIP.get() == "ggpo.fightcade.com")
+		{
+			while (config::Quark.get().length() == 0);
+		}
+
 		asio::io_context io_context;
 
 		tcp::resolver resolver(io_context);
 		tcp::resolver::results_type endpoints =
-			resolver.resolve(config::SpectatorIP, config::SpectatorPort);
+			resolver.resolve(config::SpectatorIP.get(), config::SpectatorPort.get());
 
 		tcp::socket socket(io_context);
 		asio::connect(socket, endpoints);
@@ -1077,15 +1290,25 @@ void DojoSession::transmitter_thread()
 
 		MessageWriter spectate_start;
 
-		spectate_start.AppendHeader(1, 3);
+		spectate_start.AppendHeader(1, SPECTATE_START);
 
-		spectate_start.AppendInt(1);
+		spectate_start.AppendInt(3);
+
 		spectate_start.AppendString(get_game_name());
 		spectate_start.AppendString(config::PlayerName.get());
 		spectate_start.AppendString(config::OpponentName.get());
 
 		spectate_start.AppendString(config::Quark.get());
 		spectate_start.AppendString(config::MatchCode.get());
+
+		// ggpo analog settings
+		if (settings.platform.isConsole())
+			spectate_start.AppendInt((u32)config::GGPOAnalogAxes.get());
+		else
+			spectate_start.AppendInt(0);
+
+		spectate_start.AppendString(settings.dojo.state_md5);
+		spectate_start.AppendString(settings.dojo.state_commit);
 
 		std::vector<unsigned char> message = spectate_start.Msg();
 		asio::write(socket, asio::buffer(message));
@@ -1095,11 +1318,11 @@ void DojoSession::transmitter_thread()
 		unsigned int sent_frame_count = 0;
 
 		MessageWriter frame_msg;
-		frame_msg.AppendHeader(0, GAME_BUFFER);
+		frame_msg.AppendHeader(0, MAPLE_BUFFER);
 
 		// start with individual frame size
 		// (body_size % data_size == 0)
-		frame_msg.AppendInt(FRAME_SIZE);
+		frame_msg.AppendInt(MAPLE_FRAME_SIZE);
 
 		for (;;)
 		{
@@ -1110,7 +1333,7 @@ void DojoSession::transmitter_thread()
 				current_frame = transmission_frames.front();
 				//u32 frame_num = GetFrameNumber((u8*)current_frame.data());
 
-				frame_msg.AppendContinuousData(current_frame.data(), FRAME_SIZE);
+				frame_msg.AppendContinuousData(current_frame.data(), MAPLE_FRAME_SIZE);
 
 				transmission_frames.pop_front();
 				sent_frame_count++;
@@ -1122,11 +1345,11 @@ void DojoSession::transmitter_thread()
 					asio::write(socket, asio::buffer(message));
 
 					frame_msg = MessageWriter();
-					frame_msg.AppendHeader(sent_frame_count + 1, GAME_BUFFER);
+					frame_msg.AppendHeader(sent_frame_count + 1, MAPLE_BUFFER);
 
 					// start with individual frame size
 					// (body_size % data_size == 0)
-					frame_msg.AppendInt(FRAME_SIZE);
+					frame_msg.AppendInt(MAPLE_FRAME_SIZE);
 				}
 			}
 
@@ -1141,8 +1364,9 @@ void DojoSession::transmitter_thread()
 				}
 
 				MessageWriter disconnect_msg;
-				disconnect_msg.AppendHeader(sent_frame_count + 1, GAME_BUFFER);
-				disconnect_msg.AppendData("000000000000", FRAME_SIZE);
+				disconnect_msg.AppendHeader(sent_frame_count + 1, MAPLE_BUFFER);
+				disconnect_msg.AppendData("0000000000000000", MAPLE_FRAME_SIZE);
+
 				asio::write(socket, asio::buffer(disconnect_msg.Msg()));
 				std::cout << "Transmission Ended" << std::endl;
 				break;
@@ -1167,6 +1391,12 @@ u16 DojoSession::ApplyOfflineInputs(PlainJoystickState* pjs, u16 buttons, u32 po
 		}
 	}
 
+	if (settings.dojo.training && !config::ThreadedRendering && stepping && port == 0)
+	{
+		emu.stop();
+		gui_state = GuiState::ReplayPause;
+	}
+
 	u32 target_port = port;
 
 	if (player == 1 && delay > 0)
@@ -1183,10 +1413,29 @@ u16 DojoSession::ApplyOfflineInputs(PlainJoystickState* pjs, u16 buttons, u32 po
 
 	AddNetFrame(current_frame_data.data());
 
-	if (config::Training)
+	if (settings.dojo.training)
 	{
 		if (recording && GetPlayer((u8*)current_frame_data.data()) == record_player)
-			record_slot[current_record_slot].push_back(current_frame_data);
+		{
+			if (config::RecordOnFirstInput)
+			{
+				if(!recording_started &&
+					(current_frame_data.data()[4] != 0 ||
+					current_frame_data.data()[5] != 0 ||
+					current_frame_data.data()[6] != 0 ||
+					current_frame_data.data()[7] != 0 ||
+					current_frame_data.data()[8] != 0 ||
+					current_frame_data.data()[9] != 0))
+				{
+					recording_started = true;
+				}
+			}
+
+			if (recording_started)
+			{
+				record_slot[current_record_slot].push_back(current_frame_data);
+			}
+		}
 
 		if (!recording && !playing_input &&
 			playback_loop && trigger_playback &&
@@ -1196,7 +1445,7 @@ u16 DojoSession::ApplyOfflineInputs(PlainJoystickState* pjs, u16 buttons, u32 po
 		}
 	}
 
-	if (delay > 0 || config::Training)
+	if (delay > 0 || settings.dojo.training)
 	{
 		std::string this_frame;
 		while(this_frame.empty())
@@ -1218,10 +1467,19 @@ u16 DojoSession::ApplyOfflineInputs(PlainJoystickState* pjs, u16 buttons, u32 po
 	if (net_inputs[0].count(FrameNumber + delay) == 1 &&
 		net_inputs[1].count(FrameNumber + delay) == 1)
 	{
-		if (config::RecordMatches)
+		std::string p1_frame = net_inputs[0].at(FrameNumber + delay);
+		std::string p2_frame = net_inputs[1].at(FrameNumber + delay);
+
+		if (config::RecordMatches && !config::GGPOEnable)
 		{
-			AppendToReplayFile(net_inputs[0].at(FrameNumber + delay));
-			AppendToReplayFile(net_inputs[1].at(FrameNumber + delay));
+			AppendToReplayFile(p1_frame);
+			AppendToReplayFile(p2_frame);
+		}
+
+		if (settings.dojo.training)
+		{
+			std::string current_p1_frame_data = dojo.AddToInputDisplay((u8*)p1_frame.data());
+			std::string current_p2_frame_data = dojo.AddToInputDisplay((u8*)p2_frame.data());
 		}
 
 		FrameNumber++;
@@ -1283,19 +1541,30 @@ void DojoSession::ToggleRecording(int slot)
 	if (recording)
 	{
 		recording = false;
-		NoticeStream << "Stop Recording Slot" << slot + 1 << "Player " << record_player + 1;
+		recording_started = false;
+		NoticeStream << "Stop Recording Slot " << slot + 1 << " Player " << record_player + 1;
 	}
 	else
 	{
 		current_record_slot = slot;
 		record_slot[slot].clear();
+		recorded_slots.insert(slot);
 		recording = true;
-		NoticeStream << "Recording Slot" << slot + 1 << "Player " << record_player + 1;
+		if (config::RecordOnFirstInput)
+			recording_started = false;
+		else
+			recording_started = true;
+		NoticeStream << "Recording Slot " << slot + 1 << " Player " << record_player + 1;
 	}
 	gui_display_notification(NoticeStream.str().data(), 2000);
 }
 
 void DojoSession::TogglePlayback(int slot)
+{
+	TogglePlayback(slot, false);
+}
+
+void DojoSession::TogglePlayback(int slot, bool hide_slot = false)
 {
 	std::ostringstream NoticeStream;
 	if (dojo.playback_loop)
@@ -1303,22 +1572,49 @@ void DojoSession::TogglePlayback(int slot)
 		if (dojo.trigger_playback)
 		{
 			dojo.trigger_playback = false;
-			NoticeStream << "Stop Loop Slot " << slot + 1;
+			if (hide_slot)
+				NoticeStream << "Stop Loop";
+			else
+				NoticeStream << "Stop Loop Slot " << slot + 1;
 		}
 		else
 		{
 			current_record_slot = slot;
 			dojo.trigger_playback = true;
-			NoticeStream << "Play Loop Slot " << slot + 1;
+			if (hide_slot)
+				NoticeStream << "Play Loop";
+			else
+				NoticeStream << "Play Loop Slot " << slot + 1;
 		}
 	}
 	else
 	{
 		current_record_slot = slot;
-		NoticeStream << "Play Slot " << slot + 1;
+		if (hide_slot)
+			NoticeStream << "Play Input";
+		else
+			NoticeStream << "Play Slot " << slot + 1;
 		dojo.PlayRecording(slot);
 	}
 	gui_display_notification(NoticeStream.str().data(), 2000);
+}
+
+void DojoSession::ToggleRandomPlayback()
+{
+	if (recorded_slots.empty())
+	{
+		gui_display_notification("No Input Slots Recorded", 2000);
+		return;
+	}
+	if (!playing_input)
+	{
+		auto it = recorded_slots.cbegin();
+		srand(time(0));
+		int rnd = rand() % recorded_slots.size();
+		std::advance(it, rnd);
+		current_record_slot = *it;
+	}
+	dojo.TogglePlayback(current_record_slot, config::HideRandomInputSlot.get());
 }
 
 void DojoSession::PlayRecording(int slot)
@@ -1341,7 +1637,7 @@ void DojoSession::PlayRecording(int slot)
 	}
 }
 
-void DojoSession::SwitchPlayer()
+void DojoSession::TrainingSwitchPlayer()
 {
 	record_player == 0 ?
 		record_player = 1 :
@@ -1353,45 +1649,38 @@ void DojoSession::SwitchPlayer()
 
 	opponent = player == 0 ? 1 : 0;
 
-	if (delay == 0)
-	{
-		for (int i = 0; i < GamepadDevice::GetGamepadCount(); i++)
-		{
-			std::shared_ptr<GamepadDevice> gamepad = GamepadDevice::GetGamepad(i);
-			if (gamepad->name() != "Default Mouse")
-			{
-				if (gamepad->maple_port() == player)
-					gamepad->set_maple_port(opponent);
-				else if (gamepad->maple_port() == opponent)
-					gamepad->set_maple_port(player);
-			}
-		}
+	if (player != 0)
+		player_switched = true;
 
-		if (player != 0)
-			player_switched = true;
-	}
+	if (delay == 0)
+		SwitchPlayer();
 
 	std::ostringstream NoticeStream;
 	NoticeStream << "Monitoring Player " << record_player + 1;
 	gui_display_notification(NoticeStream.str().data(), 2000);
 }
 
+void DojoSession::SwitchPlayer()
+{
+	for (auto gamepad_uid : training_p1_gamepads)
+	{
+		std::shared_ptr<GamepadDevice> gamepad = GamepadDevice::GetGamepad(gamepad_uid);
+		if (gamepad->maple_port() == 0)
+			gamepad->set_maple_port(1);
+		else if (gamepad->maple_port() == 1)
+			gamepad->set_maple_port(0);
+	}
+
+	config::PlayerSwitched = !config::PlayerSwitched.get();
+	cfgSaveBool("dojo", "PlayerSwitched", config::PlayerSwitched);
+	std::cout << "Player Switched " << cfgLoadBool("dojo", "PlayerSwitched", false) << std::endl;
+}
+
+
 void DojoSession::ResetTraining()
 {
-	if (delay == 0 && player_switched)
-	{
-		for (int i = 0; i < GamepadDevice::GetGamepadCount(); i++)
-		{
-			std::shared_ptr<GamepadDevice> gamepad = GamepadDevice::GetGamepad(i);
-			if (gamepad->name() != "Default Mouse")
-			{
-				if (gamepad->maple_port() == player)
-					gamepad->set_maple_port(opponent);
-				else if (gamepad->maple_port() == opponent)
-					gamepad->set_maple_port(player);
-			}
-		}
-	}
+	if (config::PlayerSwitched)
+		SwitchPlayer();
 
 	player_switched = false;
 
@@ -1404,6 +1693,99 @@ void DojoSession::ResetTraining()
 	for (int i = 0; i < 3; i++)
 	{
 		record_slot[i].clear();
+	}
+
+	recorded_slots.clear();
+
+	for (int i = 0; i < 2; i++)
+	{
+		displayed_inputs[i].clear();
+		displayed_inputs_str[i].clear();
+		last_displayed_inputs_str[i] = "";
+		displayed_inputs_duration[i].clear();
+		displayed_dirs[i].clear();
+		displayed_dirs_str[i].clear();
+		displayed_num_dirs[i].clear();
+	}
+
+	training_p1_gamepads.clear();
+}
+
+size_t ipWriteFunction(void *ptr, size_t size, size_t nmemb, std::string* data) {
+    data->append((char*) ptr, size * nmemb);
+    return size * nmemb;
+}
+
+std::string DojoSession::GetExternalIP()
+{
+
+	std::string response_string = "";
+#ifndef __ANDROID__
+	auto curl = curl_easy_init();
+
+	if (curl) {
+		curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+		curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+
+		curl_easy_setopt(curl, CURLOPT_URL, "https://myexternalip.com/raw");
+		curl_easy_setopt(curl, CURLOPT_NOBODY, 0L);
+		curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+		curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+		curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+
+		std::string header_string;
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, ipWriteFunction);
+		curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_string);
+		curl_easy_setopt(curl, CURLOPT_HEADERDATA, &header_string);
+
+		char* url;
+		long response_code;
+		double elapsed;
+		curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+		curl_easy_getinfo(curl, CURLINFO_TOTAL_TIME, &elapsed);
+		curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &url);
+
+		curl_easy_perform(curl);
+		curl_easy_cleanup(curl);
+		curl = NULL;
+	}
+#endif
+
+	std::cout << response_string << std::endl;
+	return response_string;
+}
+
+void DojoSession::StartUPnP()
+{
+	if (upnp_started)
+		return;
+
+	miniupnp.Init();
+	miniupnp.AddPortMapping(std::stoi(config::DojoServerPort.get()), false);
+
+	if (config::NetplayMethod.get() == "GGPO")
+		miniupnp.AddPortMapping(config::GGPOPort.get(), false);
+
+	upnp_started = true;
+}
+
+void DojoSession::StopUPnP()
+{
+	if (upnp_started)
+		miniupnp.Term();
+}
+
+void DojoSession::AssignNames()
+{
+	if (dojo.hosting || dojo.PlayMatch || config::Receiving || config::ActAsServer)
+	{
+		player_1 = settings.dojo.PlayerName;
+		player_2 = settings.dojo.OpponentName;
+	}
+	else
+	{
+		player_1 = settings.dojo.OpponentName;
+		player_2 = settings.dojo.PlayerName;
 	}
 }
 

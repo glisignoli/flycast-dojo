@@ -14,8 +14,10 @@
 
 ConsoleListener::ConsoleListener()
 {
-#ifdef LOG_TO_PTY
+#if defined(LOG_TO_PTY) || defined(__APPLE__)
   m_use_color = 1;
+#elif defined(__SWITCH__)
+  m_use_color = 0;
 #else
   m_use_color = !!isatty(fileno(stderr));
 #endif

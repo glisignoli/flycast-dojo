@@ -23,11 +23,13 @@
 #include "vmallocator.h"
 #include "vulkan_context.h"
 
+#if !defined(NDEBUG) || defined(DEBUGFAST)
 VKAPI_ATTR static void VKAPI_CALL vmaAllocateDeviceMemoryCallback(
     VmaAllocator      allocator,
     uint32_t          memoryType,
     VkDeviceMemory    memory,
-    VkDeviceSize      size)
+    VkDeviceSize      size,
+	void *            userData)
 {
 	DEBUG_LOG(RENDERER, "VMAAllocator: %" PRIu64 " bytes allocated (type %d)", size, memoryType);
 }
@@ -36,14 +38,16 @@ VKAPI_ATTR static void VKAPI_CALL vmaFreeDeviceMemoryCallback(
     VmaAllocator      allocator,
     uint32_t          memoryType,
     VkDeviceMemory    memory,
-    VkDeviceSize      size)
+    VkDeviceSize      size,
+	void *            userData)
 {
 	DEBUG_LOG(RENDERER, "VMAAllocator: %" PRIu64 " bytes freed (type %d)", size, memoryType);
 }
 
 static const VmaDeviceMemoryCallbacks memoryCallbacks = { vmaAllocateDeviceMemoryCallback, vmaFreeDeviceMemoryCallback };
+#endif
 
-void VMAllocator::Init(vk::PhysicalDevice physicalDevice, vk::Device device)
+void VMAllocator::Init(vk::PhysicalDevice physicalDevice, vk::Device device, vk::Instance instance)
 {
 	verify(allocator == VK_NULL_HANDLE);
 	VmaAllocatorCreateInfo allocatorInfo = { VMA_ALLOCATOR_CREATE_EXTERNALLY_SYNCHRONIZED_BIT };
@@ -52,10 +56,19 @@ void VMAllocator::Init(vk::PhysicalDevice physicalDevice, vk::Device device)
 
 	allocatorInfo.physicalDevice = (VkPhysicalDevice)physicalDevice;
 	allocatorInfo.device = (VkDevice)device;
+	allocatorInfo.instance = (VkInstance)instance;
 #if !defined(NDEBUG) || defined(DEBUGFAST)
 	allocatorInfo.pDeviceMemoryCallbacks = &memoryCallbacks;
 #endif
+
+#if VMA_DYNAMIC_VULKAN_FUNCTIONS
+	VmaVulkanFunctions vulkanFunctions = {};
+	vulkanFunctions.vkGetInstanceProcAddr = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr;
+	vulkanFunctions.vkGetDeviceProcAddr = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr;
+	allocatorInfo.pVulkanFunctions = &vulkanFunctions;
+#endif
+
 	VkResult rc = vmaCreateAllocator(&allocatorInfo, &allocator);
 	if (rc != VK_SUCCESS)
-		throwResultException((vk::Result)rc, "vmaCreateAllocator failed");
+		vk::throwResultException((vk::Result)rc, "vmaCreateAllocator failed");
 }

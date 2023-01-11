@@ -28,6 +28,9 @@
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h"
 #include "hw/maple/maple_devs.h"
+#define STBI_ONLY_JPEG
+#define STBI_ONLY_PNG
+#include <stb_image.h>
 
 static std::string select_current_directory;
 static std::vector<std::string> subfolders;
@@ -43,6 +46,7 @@ static const std::string native_separator = "/";
 #define PSEUDO_ROOT ":"
 
 extern int insetLeft, insetRight, insetTop, insetBottom;
+void error_popup();
 
 void select_file_popup(const char *prompt, StringCallback callback,
 		bool selectFile, const std::string& selectExtension)
@@ -71,6 +75,8 @@ void select_file_popup(const char *prompt, StringCallback callback,
 				select_current_directory = home_drive;
 			select_current_directory += nowide::getenv("HOMEPATH");
 		}
+#elif defined(__SWITCH__)
+		select_current_directory = "/";
 #endif
 		if (select_current_directory.empty())
 		{
@@ -83,7 +89,7 @@ void select_file_popup(const char *prompt, StringCallback callback,
 	fullScreenWindow(true);
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
 
-	if (ImGui::BeginPopupModal(prompt, NULL, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize ))
+	if (ImGui::BeginPopup(prompt, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize ))
 	{
 		std::string path = select_current_directory;
 		std::string::size_type last_sep = path.find_last_of(separators);
@@ -106,6 +112,15 @@ void select_file_popup(const char *prompt, StringCallback callback,
 				for (int i = 0; i < 32; i++)
 					if ((drives & (1 << i)) != 0)
 						subfolders.push_back(std::string(1, (char)('A' + i)) + ":\\");
+#ifdef TARGET_UWP
+				// Add the home directory to the list of drives as it's not accessible from the root
+				std::string home;
+				const char *home_drive = nowide::getenv("HOMEDRIVE");
+				if (home_drive != NULL)
+					home = home_drive;
+				home += nowide::getenv("HOMEPATH");
+				subfolders.push_back(home);
+#endif
 			}
 			else
 #elif __ANDROID__
@@ -158,7 +173,6 @@ void select_file_popup(const char *prompt, StringCallback callback,
 						if (entry->d_type == DT_DIR)
 							is_dir = true;
 						if (entry->d_type == DT_UNKNOWN || entry->d_type == DT_LNK)
-#endif
 						{
 							struct stat st;
 							if (flycast::stat(child_path.c_str(), &st) != 0)
@@ -166,11 +180,28 @@ void select_file_popup(const char *prompt, StringCallback callback,
 							if (S_ISDIR(st.st_mode))
 								is_dir = true;
 						}
-						if (is_dir && flycast::access(child_path.c_str(), R_OK) == 0)
+#else // _WIN32
+						nowide::wstackstring wname;
+					    if (wname.convert(child_path.c_str()))
+					    {
+							DWORD attr = GetFileAttributesW(wname.c_str());
+							if (attr != INVALID_FILE_ATTRIBUTES)
+							{
+								if (attr & FILE_ATTRIBUTE_HIDDEN)
+									continue;
+								if (attr & FILE_ATTRIBUTE_DIRECTORY)
+									is_dir = true;
+							}
+					    }
+#endif
+						if (is_dir)
 						{
-							if (name == "..")
-								dotdot_seen = true;
-							subfolders.push_back(name);
+							if (flycast::access(child_path.c_str(), R_OK) == 0)
+							{
+								if (name == "..")
+									dotdot_seen = true;
+								subfolders.push_back(name);
+							}
 						}
                         else
                         {
@@ -188,7 +219,7 @@ void select_file_popup(const char *prompt, StringCallback callback,
                         }
 					}
 					flycast::closedir(dir);
-#if defined(_WIN32) || defined(__ANDROID__)
+#if defined(_WIN32) || defined(__ANDROID__) || defined(__SWITCH__)
 					if (!dotdot_seen)
 						subfolders.emplace_back("..");
 #else
@@ -203,9 +234,10 @@ void select_file_popup(const char *prompt, StringCallback callback,
 		}
 
 		ImGui::Text("%s", error_message.empty() ? select_current_directory.c_str() : error_message.c_str());
-		ImGui::BeginChild(ImGui::GetID("dir_list"), ImVec2(0, - 30 * gui_get_scaling() - ImGui::GetStyle().ItemSpacing.y), true);
+		ImGui::BeginChild(ImGui::GetID("dir_list"), ImVec2(0, - 30 * settings.display.uiScale - ImGui::GetStyle().ItemSpacing.y),
+				true, ImGuiWindowFlags_DragScrolling);
 
-		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8 * gui_get_scaling(), 20 * gui_get_scaling()));		// from 8, 4
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ScaledVec2(8, 20));
 
 
 		for (const auto& name : subfolders)
@@ -257,7 +289,7 @@ void select_file_popup(const char *prompt, StringCallback callback,
 #endif
 					child_path = path + native_separator + name;
 			}
-			if (ImGui::Selectable(name.c_str()))
+			if (ImGui::Selectable(name == ".." ? ".. Up to Parent Directory" : name.c_str()))
 			{
 				subfolders_read = false;
 				select_current_directory = child_path;
@@ -271,8 +303,8 @@ void select_file_popup(const char *prompt, StringCallback callback,
     			if (ImGui::Selectable(name.c_str()))
     			{
     				subfolders_read = false;
-    				callback(false, select_current_directory + native_separator + name);
-    				ImGui::CloseCurrentPopup();
+    				if (callback(false, select_current_directory + native_separator + name))
+    					ImGui::CloseCurrentPopup();
     			}
         	}
         	else
@@ -289,21 +321,23 @@ void select_file_popup(const char *prompt, StringCallback callback,
 		ImGui::EndChild();
 		if (!selectFile)
 		{
-			if (ImGui::Button("Select Current Directory", ImVec2(0, 30 * gui_get_scaling())))
+			if (ImGui::Button("Select Current Directory", ScaledVec2(0, 30)))
 			{
-				subfolders_read = false;
-				callback(false, select_current_directory);
-				ImGui::CloseCurrentPopup();
+				if (callback(false, select_current_directory))
+				{
+					subfolders_read = false;
+					ImGui::CloseCurrentPopup();
+				}
 			}
 			ImGui::SameLine();
 		}
-		if (ImGui::Button("Cancel", ImVec2(0, 30 * gui_get_scaling())))
+		if (ImGui::Button("Cancel", ScaledVec2(0, 30)))
 		{
 			subfolders_read = false;
 			callback(true, "");
 			ImGui::CloseCurrentPopup();
 		}
-
+		error_popup();
 		ImGui::EndPopup();
 	}
 	ImGui::PopStyleVar();
@@ -312,10 +346,16 @@ void select_file_popup(const char *prompt, StringCallback callback,
 // See https://github.com/ocornut/imgui/issues/3379
 void scrollWhenDraggingOnVoid(ImGuiMouseButton mouse_button)
 {
-    ImGuiContext& g = *ImGui::GetCurrentContext();
-    ImGuiWindow* window = g.CurrentWindow;
-    while ((window->Flags & ImGuiWindowFlags_ChildWindow) && window->ScrollMax.x == 0.0f && window->ScrollMax.y == 0.0f)
-        window = window->ParentWindow;
+	ImGuiContext& g = *ImGui::GetCurrentContext();
+	ImGuiWindow* window = g.CurrentWindow;
+	while (window != nullptr
+			&& (window->Flags & ImGuiWindowFlags_ChildWindow)
+			&& !(window->Flags & ImGuiWindowFlags_DragScrolling)
+			&& window->ScrollMax.x == 0.0f
+			&& window->ScrollMax.y == 0.0f)
+		window = window->ParentWindow;
+	if (window == nullptr || !(window->Flags & ImGuiWindowFlags_DragScrolling))
+		return;
     bool hovered = false;
     bool held = false;
     ImGuiButtonFlags button_flags = (mouse_button == ImGuiMouseButton_Left) ? ImGuiButtonFlags_MouseButtonLeft
@@ -650,7 +690,8 @@ bool OptionArrowButtons(const char *name, config::Option<int>& option, int min, 
 	ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0.f, 0.5f)); // Left
 	ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
 	float width = ImGui::CalcItemWidth() - innerSpacing * 2.0f - ImGui::GetFrameHeight() * 2.0f;
-	ImGui::ButtonEx(std::to_string((int)option).c_str(), ImVec2(width, 0), ImGuiButtonFlags_Disabled);
+	std::string id = "##" + std::string(name);
+	ImGui::ButtonEx((std::to_string((int)option) + id).c_str(), ImVec2(width, 0), ImGuiButtonFlags_Disabled);
 	ImGui::PopStyleColor();
 	ImGui::PopStyleVar();
 
@@ -662,7 +703,6 @@ bool OptionArrowButtons(const char *name, config::Option<int>& option, int min, 
         ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
 	}
-	std::string id = "##" + std::string(name);
     if (ImGui::ArrowButton((id + "left").c_str(), ImGuiDir_Left)) { option.set(std::max(min, option - 1)); valueChanged = true; }
     ImGui::SameLine(0.0f, innerSpacing);
     if (ImGui::ArrowButton((id + "right").c_str(), ImGuiDir_Right)) { option.set(std::min(max, option + 1)); valueChanged = true; }
@@ -826,4 +866,17 @@ void windowDragScroll()
 			ImGui::SetScrollY(window, window->Scroll.y - window->ScrollSpeed.y);
 		}
 	}
+}
+
+u8 *loadImage(const std::string& path, int& width, int& height)
+{
+	FILE *file = nowide::fopen(path.c_str(), "rb");
+	if (file == nullptr)
+		return nullptr;
+
+	int channels;
+	stbi_set_flip_vertically_on_load(0);
+	u8 *imgData = stbi_load_from_file(file, &width, &height, &channels, STBI_rgb_alpha);
+	std::fclose(file);
+	return imgData;
 }

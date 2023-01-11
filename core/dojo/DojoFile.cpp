@@ -1,28 +1,45 @@
+#ifndef __ANDROID__
+#include <cpr/cpr.h>
+#endif
+
 #include "DojoFile.hpp"
+
+#include <iostream>
 
 DojoFile dojo_file;
 
 DojoFile::DojoFile()
+{
+	RefreshFileDefinitions();
+	start_update = false;
+	update_started = false;
+	start_download = false;
+	download_started = false;
+	start_save_download = false;
+	save_download_started = false;
+
+	save_download_ended = false;
+	download_ended = false;
+	post_save_launch = false;
+}
+
+void DojoFile::RefreshFileDefinitions()
 {
 #ifdef _WIN32
 	// assign exe root path on launch
 	TCHAR szPath[MAX_PATH];
 	GetModuleFileName(0, szPath, MAX_PATH);
 	root_path = ghc::filesystem::path(szPath).parent_path().string() + "\\";
+#elif defined(__APPLE__) || defined(__ANDROID__)
+	root_path = get_writable_config_path("") + "/";
 #else
 	char result[PATH_MAX];
 	ssize_t count = readlink("/proc/self/exe", result, PATH_MAX);
 	if (count != -1)
-		root_path = std::string(dirname(result)) + "/";
+		root_path = ghc::filesystem::path(result).parent_path().string() + "/";
 #endif
-
 	LoadedFileDefinitions = LoadJsonFromFile(root_path + "flycast_roms.json");
 	RemainingFileDefinitions = LoadJsonFromFile(root_path + "flycast_roms.json");
-	start_update = false;
-	update_started = false;
-	start_download = false;
-	download_started = false;
-	download_ended = false;
 }
 
 nlohmann::json DojoFile::LoadJsonFromFile(std::string filename)
@@ -52,6 +69,40 @@ nlohmann::json DojoFile::FindEntryByFile(std::string filename)
 	return nullptr;
 }
 
+std::map<std::string, std::string> DojoFile::GetFileResourceLinks(std::string file_path)
+{
+	try
+	{
+		std::string current_filename = file_path.substr(file_path.find_last_of("/\\") + 1);
+		nlohmann::json entry = FindEntryByFile(current_filename);
+		if (entry == nullptr)
+			return {};
+
+		std::map<std::string, std::string> entry_links = entry.at("resource_links");
+		return entry_links;
+	}
+	catch (...)
+	{
+		return {};
+	}
+}
+
+std::string DojoFile::GetEntryFilename(std::string entry_name)
+{
+	if (!LoadedFileDefinitions.contains(entry_name) &&
+		entry_name.rfind("flycast_", 0) != 0)
+	{
+		entry_name = "flycast_" + entry_name;
+	}
+
+	std::string filename = "";
+
+	if (LoadedFileDefinitions.contains(entry_name))
+		filename = LoadedFileDefinitions[entry_name]["filename"];
+
+	return filename;
+}
+
 std::string DojoFile::GetEntryPath(std::string entry_name)
 {
 	if (!LoadedFileDefinitions.contains(entry_name) &&
@@ -61,6 +112,7 @@ std::string DojoFile::GetEntryPath(std::string entry_name)
 	}
 
 	std::string filename = "";
+	std::string chd_filename = "";
 	std::string dir_name = "ROMs";
 	std::string nested_dir = "";
 
@@ -77,20 +129,42 @@ std::string DojoFile::GetEntryPath(std::string entry_name)
 	{
 		// when rom not in reference json file
 		// default arcade rom name + .zip, ignore dc entries
+		// fall back to dreamcast chd file
 		filename = entry_name;
 		stringfix::replace(filename, "flycast_", "");
+		chd_filename = filename;
 		filename.append(".zip");
+		chd_filename.append(".chd");
 	}
 
-	// check if destination filename exists, return if so
-	std::string target;
-	if (nested_dir.empty())
-		target = root_path + dir_name + "/" + filename;
-	else
-		target = root_path + dir_name + "/" + nested_dir + "/" + filename;
+	auto rom_paths = config::ContentPath.get();
 
-	if (ghc::filesystem::exists(target))
-		return target;
+	if (std::find(rom_paths.begin(), rom_paths.end(), "ROMs") == rom_paths.end())
+		rom_paths.push_back("ROMs");
+
+	for(int i = 0; i < rom_paths.size(); i++)
+	{
+		// check if destination filename exists, return if so
+		std::string target;
+		std::string chd_target = "";
+		if (nested_dir.empty())
+		{
+			target = rom_paths[i] + "/" + filename;
+			if (!chd_filename.empty())
+				chd_target = rom_paths[i] + "/" + chd_filename;
+		}
+		else
+		{
+			target = rom_paths[i] + "/" + nested_dir + "/" + filename;
+			if (!chd_filename.empty())
+				chd_target = rom_paths[i] + "/" + nested_dir + "/" + chd_filename;
+		}
+
+		if (ghc::filesystem::exists(target))
+			return target;
+		if (!chd_target.empty() && ghc::filesystem::exists(chd_target))
+			return chd_target;
+	}
 
 	return "";
 }
@@ -167,10 +241,11 @@ bool DojoFile::CompareRom(std::string file_path)
 static void safe_create_dir(const char* dir)
 {
 #ifdef _WIN32
-	if (mkdir(dir) < 0) {
-#elif __linux__
-	if (mkdir(dir, 0777) < 0) {
+	if (mkdir(dir) < 0)
+#else
+	if (mkdir(dir, 0777) < 0)
 #endif
+	{
 		if (errno != EEXIST) {
 			perror(dir);
 			exit(1);
@@ -444,21 +519,26 @@ void DojoFile::OverwriteDataFolder(std::string new_root)
 
 		for (const auto& dirEntry : ghc::filesystem::recursive_directory_iterator("data"))
 			ghc::filesystem::permissions(dirEntry,
-				ghc::filesystem::perms::owner_read,
+				ghc::filesystem::perms::owner_write,
 				ghc::filesystem::perm_options::replace);
 	}
 }
 
 void DojoFile::CopyNewFlycast(std::string new_root)
 {
-   if (ghc::filesystem::copy_file(new_root + "/flycast.exe", "flycast_new.exe",
-		ghc::filesystem::copy_options::overwrite_existing))
-   {
-	   remove("flycast_old.exe");
-	   rename("flycast.exe", "flycast_old.exe");
-	   rename("flycast_new.exe", "flycast.exe");
-	   //exit(0);
-   }
+	if (ghc::filesystem::copy_file(new_root + "/flycast.exe", "flycast_new.exe",
+	 ghc::filesystem::copy_options::overwrite_existing))
+	{
+		remove("flycast_old.exe");
+		rename("flycast.exe", "flycast_old.exe");
+		rename("flycast_new.exe", "flycast.exe");
+
+		// copy new game definitions
+		ghc::filesystem::copy_file(new_root + "/flycast_roms.json", "flycast_roms.json",
+			ghc::filesystem::copy_options::overwrite_existing);
+
+		//exit(0);
+	}
 }
 
 size_t writeFunction(void *ptr, size_t size, size_t nmemb, std::string* data) {
@@ -475,6 +555,7 @@ std::tuple<std::string, std::string> DojoFile::GetLatestDownloadUrl()
 
 	std::string latest_url = "https://api.github.com/repos/blueminder/flycast-dojo/releases/latest";
 
+#ifndef ANDROID
 	auto curl = curl_easy_init();
 	if (curl)
 	{
@@ -501,7 +582,8 @@ std::tuple<std::string, std::string> DojoFile::GetLatestDownloadUrl()
 			tag_name = j["tag_name"].get<std::string>();
 			for (nlohmann::json::iterator it = j["assets"].begin(); it != j["assets"].end(); ++it)
 			{
-				if ((*it)["content_type"] == "application/x-zip-compressed")
+				if ((*it)["name"].get<std::string>().rfind("flycast-dojo", 0) == 0 &&
+					(*it)["content_type"] == "application/x-zip-compressed")
 				{
 					download_url = (*it)["browser_download_url"].get<std::string>();
 				}
@@ -513,6 +595,10 @@ std::tuple<std::string, std::string> DojoFile::GetLatestDownloadUrl()
 		tag_name = "";
 		download_url = "";
 	}
+#else
+	tag_name = "";
+	download_url = "";
+#endif
 	return std::make_tuple(tag_name, download_url);
 }
 
@@ -521,6 +607,7 @@ std::string DojoFile::DownloadFile(std::string download_url, std::string dest_fo
 	return DownloadFile(download_url, dest_folder, 0);
 }
 
+#ifndef ANDROID
 static int xferinfo(void *p,
                     curl_off_t dltotal, curl_off_t dlnow,
                     curl_off_t ultotal, curl_off_t ulnow)
@@ -544,18 +631,86 @@ size_t writeFileFunction(const char *p, size_t size, size_t nmemb) {
 	dojo_file.of.write(p, size * nmemb);
 	return size * nmemb;
 }
+#endif
+
+std::string DojoFile::DownloadNetSave(std::string rom_name)
+{
+	return DownloadNetSave(rom_name, "");
+}
+
+std::string DojoFile::DownloadNetSave(std::string rom_name, std::string commit)
+{
+	auto net_state_base = config::NetSaveBase.get();
+	if (!commit.empty())
+	{
+		commit.erase(std::remove_if(commit.begin(), commit.end(),
+			[](char c) {
+			    return (c == ' ' || c == '\n' || c == '\r' ||
+			            c == '\t' || c == '\v' || c == '\f');
+			}),
+			commit.end());
+		stringfix::replace(net_state_base, "main", std::string(commit.data()));
+	}
+	auto state_file = rom_name + ".state";
+	auto net_state_file = state_file + ".net";
+	auto net_state_url = net_state_base + net_state_file;
+	stringfix::replace(net_state_url, " ", "%20");
+
+	NOTICE_LOG(NETWORK, "save url: %s", net_state_url.data());
+
+	status_text = "Downloading netplay savestate for " + rom_name + ".";
+
+	auto filename = DownloadFile(net_state_url, "data");
+	if (filename.empty())
+		return filename;
+
+	save_download_ended = true;
+
+	std::string commit_net_state_file;
+	// if not latest, append savestate filename with commit
+	if (!commit.empty())
+	{
+		commit_net_state_file = net_state_file + "." + commit;
+#if defined(__APPLE__) || defined(__ANDROID__)
+		ghc::filesystem::copy(filename, get_writable_config_path("") + "/data/" + net_state_file);
+#else
+		ghc::filesystem::copy(filename, "data/" + commit_net_state_file);
+#endif
+	}
+
+	//std::FILE* file = std::fopen(filename.data(), "rb");
+	//settings.dojo.state_md5 = md5file(file);
+
+	if (commit.empty())
+	{
+		std::string commit_str = get_savestate_commit(filename);
+		settings.dojo.state_commit = commit_str;
+	}
+	else
+	{
+		settings.dojo.state_commit = commit;
+	}
+
+	return filename;
+}
 
 std::string DojoFile::DownloadFile(std::string download_url, std::string dest_folder, size_t download_size)
 {
-
 	auto filename = stringfix::split("//", download_url).back();
+	std::string path = filename;
 	if (!dest_folder.empty())
-		filename = dest_folder + "//" + filename;
+		path = get_writable_config_path("") + "//" + dest_folder + "//" + filename;
 
-	of = std::ofstream(filename, std::ofstream::out | std::ofstream::binary);
+	// if file already exists, delete before starting new download
+	if (file_exists(path.c_str()))
+		remove(path.c_str());
+
+	of = std::ofstream(path, std::ofstream::out | std::ofstream::binary);
 
 	total_size = download_size;
 
+	long response_code = -1;
+#ifndef ANDROID
 	auto curl = curl_easy_init();
 	CURLcode res = CURLE_OK;
 	if (curl)
@@ -565,19 +720,61 @@ std::string DojoFile::DownloadFile(std::string download_url, std::string dest_fo
 		curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
 		curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
 
+		curl_easy_setopt(curl, CURLOPT_NOBODY, 0L);
 		curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
 		curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 		curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, xferinfo);
 		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeFileFunction);
+		curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
 
 		res = curl_easy_perform(curl);
-		if(res != CURLE_OK)
-			fprintf(stderr, "%s\n", curl_easy_strerror(res));
+
+		curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+
+		if (response_code == 404)
+		{
+			res = CURLE_REMOTE_FILE_NOT_FOUND;
+		}
 
 		curl_easy_cleanup(curl);
 	}
 
-	return filename;
+	stringfix::replace(filename, "%20", " ");
+
+	if (res != CURLE_OK)
+	{
+		fprintf(stderr, "%s\n", curl_easy_strerror(res));
+		if (res == CURLE_REMOTE_FILE_NOT_FOUND || response_code == 404)
+		{
+			status_text = filename + " not found. ";
+			if (stringfix::get_extension(filename) == "net")
+				status_text += "\n\nIt is recommended that you create a savestate\nto share with your opponent.";
+		}
+		else
+			status_text = "Unable to retrieve " + filename + ".";
+		if (file_exists(path.c_str()))
+			remove(path.c_str());
+		download_ended = true;
+	}
+#endif
+	of.close();
+
+	if (file_exists(path.c_str()))
+	{
+		std::string old_path = path;
+		stringfix::replace(path, "%20", " ");
+		rename(old_path.c_str(), path.c_str());
+	}
+
+	if (response_code == 404 || (file_exists(path.c_str()) && ghc::filesystem::file_size(path) == 0))
+	{
+		remove(path.c_str());
+		path = "";
+	}
+	else
+		status_text = filename + " successfully downloaded.";
+
+	return path;
 }
 
 void DojoFile::DownloadDependencies(std::string entry_name)
@@ -602,7 +799,7 @@ std::string DojoFile::DownloadEntry(std::string entry_name)
 	if (entry_name.find("bios") != std::string::npos)
 		dir_name = "data";
 	else
-		dir_name = "ROMS";
+		dir_name = "ROMs";
 
 	if (!ghc::filesystem::exists(dir_name))
 		ghc::filesystem::create_directory(dir_name);
@@ -620,8 +817,12 @@ std::string DojoFile::DownloadEntry(std::string entry_name)
 	if (ghc::filesystem::exists(target))
 		return target;
 
-	if (entry_name.find("chd") != std::string::npos ||
-		entry_name.find("bios") != std::string::npos)
+	if (entry_name.find("bios") != std::string::npos)
+	{
+		status_text = "Downloading " + entry_name;
+		filename = DownloadFile(download_url, "data", download_size);
+	}
+	else if (entry_name.find("chd") != std::string::npos)
 	{
 		status_text = "Downloading " + entry_name;
 		if (!ghc::filesystem::exists("cache"))
@@ -638,9 +839,9 @@ std::string DojoFile::DownloadEntry(std::string entry_name)
 	else
 	{
 		DownloadDependencies(entry_name);
-		auto dir_name = "ROMS";
+		auto dir_name = "ROMs";
 		status_text = "Downloading " + filename;
-		filename = DownloadFile(download_url, "ROMS", download_size);
+		filename = DownloadFile(download_url, "ROMs", download_size);
 		CompareFile(filename, entry_name);
 		dojo_file.download_ended = true;
 	}
@@ -650,32 +851,22 @@ std::string DojoFile::DownloadEntry(std::string entry_name)
 
 void DojoFile::ExtractEntry(std::string entry_name)
 {
-	std::string download_url = LoadedFileDefinitions[entry_name]["download"];
+	auto entry = LoadedFileDefinitions.find(entry_name);
+
+	std::string download_url = (*entry)["download"];
 	std::string filename = download_url.substr(download_url.find_last_of("/") + 1);
 
-	if (entry_name.find("bios") != std::string::npos)
-	{
-		Unzip("cache/" + filename, "data");
+	Unzip("cache/" + filename, "cache");
 
-		CompareFile(get_readonly_data_path("naomi.zip"), "flycast_naomi_bios");
-		CompareFile(get_readonly_data_path("awbios.zip"), "flycast_atomiswave_bios");
-	}
-	else
-	{
-		auto entry = LoadedFileDefinitions.find(entry_name);
+	std::string src = (*entry)["extract_to"][0]["src"];
+	std::string dst = (*entry)["extract_to"][0]["dst"];
 
-		Unzip("cache/" + filename, "cache");
+	std::string dir_name = "ROMs";
 
-		std::string src = (*entry)["extract_to"][0]["src"];
-		std::string dst = (*entry)["extract_to"][0]["dst"];
+	ghc::filesystem::rename("cache/" + src, dir_name + "/" + dst);
 
-		std::string dir_name = "ROMS";
-
-		ghc::filesystem::rename("cache/" + src, dir_name + dst);
-
-		if (entry_name.find("chd") != std::string::npos)
-			CompareFile(dir_name + dst, entry_name);
-	}
+	if (entry_name.find("chd") != std::string::npos)
+		CompareFile(dir_name + dst, entry_name);
 }
 
 void DojoFile::RemoveFromRemaining(std::string rom_path)
@@ -699,6 +890,7 @@ void DojoFile::Update()
 	status_text = "Downloading Latest Update";
 	std::string filename = dojo_file.DownloadFile(download_url, "");
 	auto dirname = stringfix::remove_extension(filename);
+	safe_create_dir(dirname.c_str());
 	Unzip(filename);
 	OverwriteDataFolder("flycast-" + tag_name);
 	CopyNewFlycast("flycast-" + tag_name);
@@ -708,3 +900,29 @@ void DojoFile::Update()
 	ghc::filesystem::remove_all(dirname);
 }
 
+std::string DojoFile::get_savestate_commit(std::string filename)
+{
+#ifndef __ANDROID__
+	std::string github_base = "https://github.com/";
+	size_t repo_pos = config::NetSaveBase.get().find(github_base);
+	if (repo_pos == std::string::npos)
+		return "";
+
+	size_t repo_end = config::NetSaveBase.get().find("/raw/main/");
+	std::string repo_name = config::NetSaveBase.get().substr(repo_pos + github_base.length(), repo_end - github_base.length());
+
+	auto r = cpr::Get(cpr::Url{ "https://api.github.com/repos/" + repo_name + "/commits/main" });
+	nlohmann::json j = nlohmann::json::parse(r.text);
+
+	std::ofstream commit_file;
+	commit_file.open(filename + ".commit");
+
+	std::string sha = j["sha"].get<std::string>();
+	cfgSaveStr("dojo", "LatestStateCommit", sha);
+	commit_file << sha << std::endl;
+	commit_file.close();
+#else
+	std::string sha = "";
+#endif
+	return sha;
+}

@@ -7,6 +7,7 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -28,10 +29,12 @@ import androidx.core.app.ActivityCompat;
 import com.reicast.emulator.config.Config;
 import com.reicast.emulator.debug.GenerateLogs;
 import com.reicast.emulator.emu.AudioBackend;
+import com.reicast.emulator.emu.HttpClient;
 import com.reicast.emulator.emu.JNIdc;
 import com.reicast.emulator.periph.InputDeviceManager;
 import com.reicast.emulator.periph.SipEmulator;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -40,6 +43,7 @@ import java.util.Locale;
 
 import tv.ouya.console.api.OuyaController;
 
+import static android.content.res.Configuration.HARDKEYBOARDHIDDEN_NO;
 import static android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
 import static android.view.WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS;
 import static android.view.WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION;
@@ -58,6 +62,7 @@ public abstract class BaseGLActivity extends Activity implements ActivityCompat.
     private boolean paused = true;
     private boolean resumedCalled = false;
     private String pendingIntentUrl;
+    private boolean hasKeyboard = false;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -88,7 +93,7 @@ public abstract class BaseGLActivity extends Activity implements ActivityCompat.
         OuyaController.init(this);
 
         String home_directory = prefs.getString(Config.pref_home, "");
-        String result = JNIdc.initEnvironment((Emulator)getApplicationContext(), home_directory,
+        String result = JNIdc.initEnvironment((Emulator)getApplicationContext(), getFilesDir().getAbsolutePath(), home_directory,
                 Locale.getDefault().toString());
         if (result != null) {
             AlertDialog.Builder dlgAlert  = new AlertDialog.Builder(this);
@@ -108,11 +113,13 @@ public abstract class BaseGLActivity extends Activity implements ActivityCompat.
 
             return;
         }
+        Log.i("flycast", "Environment initialized");
         installButtons();
-
+        new HttpClient().nativeInit();
         setStorageDirectories();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !storagePermissionGranted) {
+            Log.i("flycast", "Asking for external storage permission");
             ActivityCompat.requestPermissions(this,
                     new String[]{
                             Manifest.permission.READ_EXTERNAL_STORAGE,
@@ -123,11 +130,13 @@ public abstract class BaseGLActivity extends Activity implements ActivityCompat.
         else
             storagePermissionGranted = true;
 
-
+        Log.i("flycast", "Initializing input devices");
         InputDeviceManager.getInstance().startListening(getApplicationContext());
         register(this);
 
         audioBackend = new AudioBackend();
+
+        onConfigurationChanged(getResources().getConfiguration());
 
         // When viewing a resource, pass its URI to the native code for opening
         Intent intent = getIntent();
@@ -148,6 +157,7 @@ public abstract class BaseGLActivity extends Activity implements ActivityCompat.
                         pendingIntentUrl = gameUri.toString();
             }
         }
+        Log.i("flycast", "BaseGLActivity.onCreate done");
     }
 
     private void setStorageDirectories()
@@ -156,7 +166,11 @@ public abstract class BaseGLActivity extends Activity implements ActivityCompat.
         List<String> pathList = new ArrayList<>();
         pathList.add(android_home_directory);
         pathList.addAll(FileBrowser.getExternalMounts());
-        Log.i("flycast", "External storage dirs: " + pathList);
+        pathList.add(getApplicationContext().getFilesDir().getAbsolutePath());
+        File dir= getApplicationContext().getExternalFilesDir(null);
+        if (dir != null)
+            pathList.add(dir.getAbsolutePath());
+        Log.i("flycast", "Storage dirs: " + pathList);
         JNIdc.setExternalStorageDirectories(pathList.toArray());
     }
 
@@ -196,6 +210,12 @@ public abstract class BaseGLActivity extends Activity implements ActivityCompat.
         }
     }
 
+    @Override
+    public void onConfigurationChanged(@NonNull Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        hasKeyboard = newConfig.hardKeyboardHidden == HARDKEYBOARDHIDDEN_NO;
+    }
+
     protected abstract void doPause();
     protected abstract void doResume();
     protected abstract boolean isSurfaceReady();
@@ -227,12 +247,39 @@ public abstract class BaseGLActivity extends Activity implements ActivityCompat.
     @Override
     public boolean onGenericMotionEvent(MotionEvent event) {
         if ((event.getSource() & InputDevice.SOURCE_CLASS_JOYSTICK) == InputDevice.SOURCE_CLASS_JOYSTICK && event.getAction() == MotionEvent.ACTION_MOVE) {
-            boolean rc = processJoystickInput(event, MotionEvent.AXIS_X);
-            rc |= processJoystickInput(event, MotionEvent.AXIS_Y);
-            rc |= processJoystickInput(event, MotionEvent.AXIS_LTRIGGER);
-            rc |= processJoystickInput(event, MotionEvent.AXIS_RTRIGGER);
-            rc |= processJoystickInput(event, MotionEvent.AXIS_RX);
-            rc |= processJoystickInput(event, MotionEvent.AXIS_RY);
+            List<InputDevice.MotionRange> axes = event.getDevice().getMotionRanges();
+            boolean rc = false;
+            for (InputDevice.MotionRange range : axes)
+                if (range.getAxis() == MotionEvent.AXIS_HAT_X) {
+                    float v = event.getAxisValue(MotionEvent.AXIS_HAT_X);
+                    if (v == -1.0) {
+                        rc |= InputDeviceManager.getInstance().joystickButtonEvent(event.getDeviceId(), KeyEvent.KEYCODE_DPAD_LEFT, true);
+                        InputDeviceManager.getInstance().joystickButtonEvent(event.getDeviceId(), KeyEvent.KEYCODE_DPAD_RIGHT, false);
+                    }
+                    else if (v == 1.0) {
+                        InputDeviceManager.getInstance().joystickButtonEvent(event.getDeviceId(), KeyEvent.KEYCODE_DPAD_LEFT, false);
+                        rc |= InputDeviceManager.getInstance().joystickButtonEvent(event.getDeviceId(), KeyEvent.KEYCODE_DPAD_RIGHT, true);
+                    } else {
+                        InputDeviceManager.getInstance().joystickButtonEvent(event.getDeviceId(), KeyEvent.KEYCODE_DPAD_LEFT, false);
+                        InputDeviceManager.getInstance().joystickButtonEvent(event.getDeviceId(), KeyEvent.KEYCODE_DPAD_RIGHT, false);
+                    }
+                }
+                else if (range.getAxis() == MotionEvent.AXIS_HAT_Y) {
+                    float v = event.getAxisValue(MotionEvent.AXIS_HAT_Y);
+                    if (v == -1.0) {
+                        rc |= InputDeviceManager.getInstance().joystickButtonEvent(event.getDeviceId(), KeyEvent.KEYCODE_DPAD_UP, true);
+                        InputDeviceManager.getInstance().joystickButtonEvent(event.getDeviceId(), KeyEvent.KEYCODE_DPAD_DOWN, false);
+                    }
+                    else if (v == 1.0) {
+                        InputDeviceManager.getInstance().joystickButtonEvent(event.getDeviceId(), KeyEvent.KEYCODE_DPAD_UP, false);
+                        rc |= InputDeviceManager.getInstance().joystickButtonEvent(event.getDeviceId(), KeyEvent.KEYCODE_DPAD_DOWN, true);
+                    } else {
+                        InputDeviceManager.getInstance().joystickButtonEvent(event.getDeviceId(), KeyEvent.KEYCODE_DPAD_UP, false);
+                        InputDeviceManager.getInstance().joystickButtonEvent(event.getDeviceId(), KeyEvent.KEYCODE_DPAD_DOWN, false);
+                    }
+                }
+                else
+                    rc |= processJoystickInput(event, range.getAxis());
             if (rc)
                 return true;
         }
@@ -254,6 +301,8 @@ public abstract class BaseGLActivity extends Activity implements ActivityCompat.
     public boolean onKeyUp(int keyCode, KeyEvent event) {
         if (InputDeviceManager.getInstance().joystickButtonEvent(event.getDeviceId(), keyCode, false))
             return true;
+        if (hasKeyboard && InputDeviceManager.getInstance().keyboardEvent(keyCode, false))
+            return true;
         return super.onKeyUp(keyCode, event);
     }
 
@@ -273,6 +322,12 @@ public abstract class BaseGLActivity extends Activity implements ActivityCompat.
             if (InputDeviceManager.getInstance().joystickButtonEvent(event.getDeviceId(), keyCode, true))
                 return true;
 
+            if (hasKeyboard) {
+                InputDeviceManager.getInstance().keyboardEvent(keyCode, true);
+                if (!event.isCtrlPressed() && (event.isPrintingKey() || event.getKeyCode() == KeyEvent.KEYCODE_SPACE))
+                    InputDeviceManager.getInstance().keyboardText(event.getUnicodeChar());
+                return true;
+            }
             if (ViewConfiguration.get(this).hasPermanentMenuKey()) {
                 if (keyCode == KeyEvent.KEYCODE_MENU) {
                     return showMenu();
@@ -294,6 +349,7 @@ public abstract class BaseGLActivity extends Activity implements ActivityCompat.
             handler.post(new Runnable() {
                 @Override
                 public void run() {
+                    Log.i("flycast", "Requesting Record audio permission");
                     ActivityCompat.requestPermissions(BaseGLActivity.this,
                             new String[]{
                                     Manifest.permission.RECORD_AUDIO
@@ -316,10 +372,12 @@ public abstract class BaseGLActivity extends Activity implements ActivityCompat.
             super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == AUDIO_PERM_REQUEST && permissions.length > 0
                 && Manifest.permission.RECORD_AUDIO .equals(permissions[0]) && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            Log.i("flycast", "Record audio permission granted");
             SipEmulator sip = new SipEmulator();
             JNIdc.setupMic(sip);
         }
         else if (requestCode == STORAGE_PERM_REQUEST) {
+            Log.i("flycast", "External storage permission granted");
             storagePermissionGranted = true;
             setStorageDirectories();
             if (pendingIntentUrl != null) {

@@ -34,7 +34,7 @@ void DojoLobby::ListenerThread()
 
 std::string DojoLobby::ConstructMsg()
 {
-	std::string current_game = get_file_basename(settings.imgread.ImagePath);
+	std::string current_game = get_file_basename(settings.content.path);
 	current_game = current_game.substr(current_game.find_last_of("/\\") + 1);
 
 	std::string status;
@@ -175,7 +175,7 @@ Listener::Listener(asio::io_context& io_context,
 
 void Listener::do_receive()
 {
-	if (dojo.host_status != 0 || dc_is_running())
+	if (dojo.host_status != 0 || emu.render())
 		return;
 
 	socket_.async_receive_from(

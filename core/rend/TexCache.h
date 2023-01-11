@@ -9,11 +9,11 @@
 #include <memory>
 #include <unordered_map>
 
-extern u8* vq_codebook;
+extern const u8 *vq_codebook;
 extern u32 palette_index;
 extern u32 palette16_ram[1024];
 extern u32 palette32_ram[1024];
-extern bool pal_needs_update,fog_needs_update;
+extern bool fog_needs_update;
 extern u32 pal_hash_256[4];
 extern u32 pal_hash_16[64];
 extern bool KillTex;
@@ -22,6 +22,7 @@ extern bool palette_updated;
 extern u32 detwiddle[2][11][1024];
 
 void palette_update();
+void forcePaletteUpdate();
 
 template<class pixel_type>
 class PixelBuffer
@@ -83,7 +84,7 @@ public:
 
 	void set_mipmap(int level)
 	{
-		size_t offset = 0;
+		u32 offset = 0;
 		for (int i = 0; i < level; i++)
 			offset += (1 << (2 * i));
 		p_current_mipmap = p_current_line = p_current_pixel = p_buffer_start + offset;
@@ -124,7 +125,7 @@ public:
 
 #define clamp(minv, maxv, x) ((x) < (minv) ? (minv) : (x) > (maxv) ? (maxv) : (x))
 
-// Open GL
+// OpenGL
 struct RGBAPacker {
 	static u32 pack(u8 r, u8 g, u8 b, u8 a) {
 		return r | (g << 8) | (b << 16) | (a << 24);
@@ -226,9 +227,9 @@ struct ConvertPlanar
 	using unpacked_type = typename Unpacker::unpacked_type;
 	static constexpr u32 xpp = 4;
 	static constexpr u32 ypp = 1;
-	static void Convert(PixelBuffer<unpacked_type> *pb, u8 *data)
+	static void Convert(PixelBuffer<unpacked_type> *pb, const u8 *data)
 	{
-		u16 *p_in = (u16 *)data;
+		const u16 *p_in = (const u16 *)data;
 		pb->prel(0, Unpacker::unpack(p_in[0]));
 		pb->prel(1, Unpacker::unpack(p_in[1]));
 		pb->prel(2, Unpacker::unpack(p_in[2]));
@@ -242,10 +243,10 @@ struct ConvertPlanarYUV
 	using unpacked_type = u32;
 	static constexpr u32 xpp = 4;
 	static constexpr u32 ypp = 1;
-	static void Convert(PixelBuffer<u32> *pb, u8 *data)
+	static void Convert(PixelBuffer<u32> *pb, const u8 *data)
 	{
 		//convert 4x1 4444 to 4x1 8888
-		u32 *p_in = (u32 *)data;
+		const u32 *p_in = (const u32 *)data;
 
 
 		s32 Y0 = (p_in[0] >> 8) & 255; //
@@ -279,9 +280,9 @@ struct ConvertTwiddle
 	using unpacked_type = typename Unpacker::unpacked_type;
 	static constexpr u32 xpp = 2;
 	static constexpr u32 ypp = 2;
-	static void Convert(PixelBuffer<unpacked_type> *pb, u8 *data)
+	static void Convert(PixelBuffer<unpacked_type> *pb, const u8 *data)
 	{
-		u16 *p_in = (u16 *)data;
+		const u16 *p_in = (const u16 *)data;
 		pb->prel(0, 0, Unpacker::unpack(p_in[0]));
 		pb->prel(0, 1, Unpacker::unpack(p_in[1]));
 		pb->prel(1, 0, Unpacker::unpack(p_in[2]));
@@ -295,10 +296,10 @@ struct ConvertTwiddleYUV
 	using unpacked_type = u32;
 	static constexpr u32 xpp = 2;
 	static constexpr u32 ypp = 2;
-	static void Convert(PixelBuffer<u32> *pb, u8 *data)
+	static void Convert(PixelBuffer<u32> *pb, const u8 *data)
 	{
 		//convert 4x1 4444 to 4x1 8888
-		u16* p_in = (u16 *)data;
+		const u16* p_in = (const u16 *)data;
 
 		s32 Y0 = (p_in[0] >> 8) & 255; //
 		s32 Yu = (p_in[0] >> 0) & 255; //p_in[0]
@@ -341,9 +342,9 @@ struct ConvertTwiddlePal4
 	using unpacked_type = typename Unpacker::unpacked_type;
 	static constexpr u32 xpp = 4;
 	static constexpr u32 ypp = 4;
-	static void Convert(PixelBuffer<unpacked_type> *pb, u8 *data)
+	static void Convert(PixelBuffer<unpacked_type> *pb, const u8 *data)
 	{
-		u8 *p_in = (u8 *)data;
+		const u8 *p_in = data;
 
 		pb->prel(0, 0, Unpacker::unpack(p_in[0] & 0xF));
 		pb->prel(0, 1, Unpacker::unpack((p_in[0] >> 4) & 0xF)); p_in++;
@@ -373,9 +374,9 @@ struct ConvertTwiddlePal8
 	using unpacked_type = typename Unpacker::unpacked_type;
 	static constexpr u32 xpp = 2;
 	static constexpr u32 ypp = 4;
-	static void Convert(PixelBuffer<unpacked_type> *pb, u8 *data)
+	static void Convert(PixelBuffer<unpacked_type> *pb, const u8 *data)
 	{
-		u8* p_in = (u8 *)data;
+		const u8* p_in = (const u8 *)data;
 
 		pb->prel(0, 0, Unpacker::unpack(p_in[0])); p_in++;
 		pb->prel(0, 1, Unpacker::unpack(p_in[0])); p_in++;
@@ -391,7 +392,7 @@ struct ConvertTwiddlePal8
 
 //handler functions
 template<class PixelConvertor>
-void texture_PL(PixelBuffer<typename PixelConvertor::unpacked_type>* pb,u8* p_in,u32 Width,u32 Height)
+void texture_PL(PixelBuffer<typename PixelConvertor::unpacked_type>* pb, const u8* p_in, u32 Width, u32 Height)
 {
 	pb->amove(0,0);
 
@@ -402,7 +403,7 @@ void texture_PL(PixelBuffer<typename PixelConvertor::unpacked_type>* pb,u8* p_in
 	{
 		for (u32 x=0;x<Width;x++)
 		{
-			u8* p = p_in;
+			const u8* p = p_in;
 			PixelConvertor::Convert(pb,p);
 			p_in+=8;
 
@@ -413,7 +414,7 @@ void texture_PL(PixelBuffer<typename PixelConvertor::unpacked_type>* pb,u8* p_in
 }
 
 template<class PixelConvertor>
-void texture_TW(PixelBuffer<typename PixelConvertor::unpacked_type>* pb,u8* p_in,u32 Width,u32 Height)
+void texture_TW(PixelBuffer<typename PixelConvertor::unpacked_type>* pb, const u8* p_in, u32 Width, u32 Height)
 {
 	pb->amove(0, 0);
 
@@ -426,7 +427,7 @@ void texture_TW(PixelBuffer<typename PixelConvertor::unpacked_type>* pb,u8* p_in
 	{
 		for (u32 x = 0; x < Width; x += PixelConvertor::xpp)
 		{
-			u8* p = &p_in[(twop(x, y, bcx, bcy) / divider) << 3];
+			const u8* p = &p_in[(twop(x, y, bcx, bcy) / divider) << 3];
 			PixelConvertor::Convert(pb, p);
 
 			pb->rmovex(PixelConvertor::xpp);
@@ -436,7 +437,7 @@ void texture_TW(PixelBuffer<typename PixelConvertor::unpacked_type>* pb,u8* p_in
 }
 
 template<class PixelConvertor>
-void texture_VQ(PixelBuffer<typename PixelConvertor::unpacked_type>* pb,u8* p_in,u32 Width,u32 Height)
+void texture_VQ(PixelBuffer<typename PixelConvertor::unpacked_type>* pb, const u8* p_in, u32 Width, u32 Height)
 {
 	p_in += 256 * 4 * 2;	// Skip VQ codebook
 	pb->amove(0, 0);
@@ -458,9 +459,9 @@ void texture_VQ(PixelBuffer<typename PixelConvertor::unpacked_type>* pb,u8* p_in
 	}
 }
 
-typedef void (*TexConvFP)(PixelBuffer<u16> *pb, u8 *p_in, u32 width, u32 height);
-typedef void (*TexConvFP8)(PixelBuffer<u8> *pb, u8 *p_in, u32 width, u32 height);
-typedef void (*TexConvFP32)(PixelBuffer<u32> *pb, u8 *p_in, u32 width, u32 height);
+typedef void (*TexConvFP)(PixelBuffer<u16> *pb, const u8 *p_in, u32 width, u32 height);
+typedef void (*TexConvFP8)(PixelBuffer<u8> *pb, const u8 *p_in, u32 width, u32 height);
+typedef void (*TexConvFP32)(PixelBuffer<u32> *pb, const u8 *p_in, u32 width, u32 height);
 
 //Planar
 constexpr TexConvFP tex565_PL = texture_PL<ConvertPlanar<UnpackerNop<u16>>>;
@@ -484,7 +485,7 @@ constexpr TexConvFP32 texPAL4_VQ32 = texture_VQ<ConvertTwiddlePal4<UnpackerPalTo
 constexpr TexConvFP32 texPAL8_VQ32 = texture_VQ<ConvertTwiddlePal8<UnpackerPalToRgb<u32>>>;
 
 namespace opengl {
-// Open GL
+// OpenGL
 
 //Planar
 constexpr TexConvFP tex1555_PL = texture_PL<ConvertPlanar<Unpacker1555>>;
@@ -551,20 +552,18 @@ constexpr TexConvFP32 tex1555_VQ32 = texture_VQ<ConvertTwiddle<Unpacker1555_32<B
 constexpr TexConvFP32 tex4444_VQ32 = texture_VQ<ConvertTwiddle<Unpacker4444_32<BGRAPacker>>>;
 }
 
+class BaseTextureCacheData;
+
 struct vram_block
 {
 	u32 start;
 	u32 end;
-	u32 len;
-	u32 type;
 
-	void* userdata;
+	BaseTextureCacheData *texture;
 };
 
-class BaseTextureCacheData;
-
 bool VramLockedWriteOffset(size_t offset);
-void libCore_vramlock_Lock(u32 start_offset, u32 end_offset, BaseTextureCacheData *texture);
+bool VramLockedWrite(u8* address);
 
 void UpscalexBRZ(int factor, u32* source, u32* dest, int width, int height, bool has_alpha);
 
@@ -573,7 +572,37 @@ enum class TextureType { _565, _5551, _4444, _8888, _8 };
 
 class BaseTextureCacheData
 {
+protected:
+	BaseTextureCacheData(TSP tsp, TCW tcw);
+
 public:
+	BaseTextureCacheData(BaseTextureCacheData&& other)
+	{
+		tsp = other.tsp;
+		tcw = other.tcw;
+		tex_type = other.tex_type;
+		sa_tex = other.sa_tex;
+		dirty = other.dirty;
+		std::swap(lock_block, other.lock_block);
+		sa = other.sa;
+		width = other.width;
+		height = other.height;
+		size = other.size;
+		tex = other.tex;
+		texconv = other.texconv;
+		texconv32 = other.texconv32;
+		texconv8 = other.texconv8;
+		Updates = other.Updates;
+		palette_hash = other.palette_hash;
+		texture_hash = other.texture_hash;
+		old_texture_hash = other.old_texture_hash;
+		std::swap(custom_image_data, other.custom_image_data);
+		custom_width = other.custom_width;
+		custom_height = other.custom_height;
+		custom_load_in_progress = 0;
+		gpuPalette = other.gpuPalette;
+	}
+
 	TSP tsp;        	//dreamcast texture parameters
 	TCW tcw;
 
@@ -638,16 +667,19 @@ public:
 		return custom_load_in_progress == 0 && custom_image_data != NULL;
 	}
 
-	void Create();
 	void ComputeHash();
 	void Update();
-	virtual void UploadToGPU(int width, int height, u8 *temp_tex_buffer, bool mipmapped, bool mipmapsIncluded = false) = 0;
+	virtual void UploadToGPU(int width, int height, const u8 *temp_tex_buffer, bool mipmapped, bool mipmapsIncluded = false) = 0;
 	virtual bool Force32BitTexture(TextureType type) const { return false; }
 	void CheckCustomTexture();
 	//true if : dirty or paletted texture and hashes don't match
 	bool NeedsUpdate();
 	virtual bool Delete();
 	virtual ~BaseTextureCacheData() = default;
+	void protectVRam();
+	void unprotectVRam();
+	void invalidate();
+
 	static bool IsGpuHandledPaletted(TSP tsp, TCW tcw)
 	{
 		// Some palette textures are handled on the GPU
@@ -692,13 +724,34 @@ public:
 		}
 		else //create if not existing
 		{
-			texture = &cache[key];
-
-			texture->tsp = tsp;
-			texture->tcw = tcw;
+			texture = &cache.emplace(std::make_pair(key, Texture(tsp, tcw))).first->second;
 		}
 
 		return texture;
+	}
+
+	Texture *getRTTexture(u32 address, u32 fb_packmode, u32 width, u32 height)
+	{
+		// TexAddr : (address), Reserved : 0, StrideSel : 0, ScanOrder : 1
+		TCW tcw{ { address >> 3, 0, 0, 1 } };
+		switch (fb_packmode)
+		{
+		case 0:
+		case 3:
+			tcw.PixelFmt = Pixel1555;
+			break;
+		case 1:
+			tcw.PixelFmt = Pixel565;
+			break;
+		case 2:
+			tcw.PixelFmt = Pixel4444;
+			break;
+		}
+		TSP tsp{};
+		for (tsp.TexU = 0; tsp.TexU <= 7 && (8u << tsp.TexU) < width; tsp.TexU++);
+		for (tsp.TexV = 0; tsp.TexV <= 7 && (8u << tsp.TexV) < height; tsp.TexV++);
+
+		return getTextureCacheData(tsp, tcw);
 	}
 
 	void CollectCleanup()
@@ -718,7 +771,7 @@ public:
 
 		for (u64 id : list)
 		{
-			if (cache[id].Delete())
+			if (cache.find(id)->second.Delete())
 				cache.erase(id);
 		}
 	}
@@ -745,7 +798,8 @@ protected:
 template<typename Packer = RGBAPacker>
 void ReadFramebuffer(PixelBuffer<u32>& pb, int& width, int& height);
 template<int Red = 0, int Green = 1, int Blue = 2, int Alpha = 3>
-void WriteTextureToVRam(u32 width, u32 height, u8 *data, u16 *dst, u32 fb_w_ctrl = -1, u32 linestride = -1);
+void WriteTextureToVRam(u32 width, u32 height, u8 *data, u16 *dst, FB_W_CTRL_type fb_w_ctrl, u32 linestride);
+void getRenderToTextureDimensions(u32& width, u32& height, u32& pow2Width, u32& pow2Height);
 
 static inline void MakeFogTexture(u8 *tex_data)
 {
@@ -761,10 +815,3 @@ void dump_screenshot(u8 *buffer, u32 width, u32 height, bool alpha = false, u32 
 
 extern const std::array<f32, 16> D_Adjust_LoD_Bias;
 #undef clamp
-
-extern float fb_scale_x, fb_scale_y;
-static inline void rend_set_fb_scale(float x, float y)
-{
-	fb_scale_x = x;
-	fb_scale_y = y;
-}

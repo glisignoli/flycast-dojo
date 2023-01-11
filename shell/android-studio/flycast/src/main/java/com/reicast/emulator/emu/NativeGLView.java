@@ -7,6 +7,7 @@ import android.os.Build;
 import android.preference.PreferenceManager;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
+import android.util.Log;
 import android.view.DisplayCutout;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
@@ -56,9 +57,6 @@ public class NativeGLView extends SurfaceView implements SurfaceHolder.Callback 
 
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
 
-        DisplayMetrics dm = context.getResources().getDisplayMetrics();
-        JNIdc.screenDpi((int)Math.max(dm.xdpi, dm.ydpi));
-
         this.setLayerType(LAYER_TYPE_HARDWARE, null);
     }
 
@@ -67,6 +65,9 @@ public class NativeGLView extends SurfaceView implements SurfaceHolder.Callback 
     {
         super.onLayout(changed, left, top, right, bottom);
         vjoyDelegate.layout(getWidth(), getHeight());
+        DisplayMetrics dm = getContext().getResources().getDisplayMetrics();
+        Log.i("flycast", "Display density: " + dm.xdpi + " x " + dm.ydpi + " dpi. Refresh rate: " + getDisplay().getRefreshRate());
+        JNIdc.screenCharacteristics(Math.max(dm.xdpi, dm.ydpi), getDisplay().getRefreshRate());
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             // Get the display cutouts if any
             WindowInsets insets = getRootWindowInsets();
@@ -102,7 +103,7 @@ public class NativeGLView extends SurfaceView implements SurfaceHolder.Callback 
 
     @Override
     public void surfaceChanged(SurfaceHolder surfaceHolder, int format, int w, int h) {
-        //Log.i("flycast", "NativeGLView.surfaceChanged: " + w + "x" + h);
+        Log.i("flycast", "NativeGLView.surfaceChanged: " + w + "x" + h);
         surfaceReady = true;
         JNIdc.rendinitNative(surfaceHolder.getSurface(), w, h);
         Emulator.getCurrentActivity().handleStateChange(false);
@@ -110,7 +111,7 @@ public class NativeGLView extends SurfaceView implements SurfaceHolder.Callback 
 
     @Override
     public void surfaceDestroyed(SurfaceHolder surfaceHolder) {
-        //Log.i("flycast", "NativeGLView.surfaceDestroyed");
+        Log.i("flycast", "NativeGLView.surfaceDestroyed");
         surfaceReady = false;
         JNIdc.rendinitNative(null, 0, 0);
         Emulator.getCurrentActivity().handleStateChange(true);
@@ -123,12 +124,12 @@ public class NativeGLView extends SurfaceView implements SurfaceHolder.Callback 
     public void pause() {
         paused = true;
         JNIdc.pause();
-        //Log.i("flycast", "NativeGLView.pause");
+        Log.i("flycast", "NativeGLView.pause");
     }
 
     public void resume() {
         if (paused) {
-            //Log.i("flycast", "NativeGLView.resume");
+            Log.i("flycast", "NativeGLView.resume");
             paused = false;
             setFocusable(true);
             setFocusableInTouchMode(true);

@@ -58,8 +58,21 @@ public:
 		vmaGetMemoryTypeProperties(allocator, allocInfo.memoryType, &flags);
 		return flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
 	}
-	void *MapMemory() const {
-		return allocInfo.pMappedData;
+	void *MapMemory() const
+	{
+		if (allocInfo.pMappedData != nullptr)
+			return allocInfo.pMappedData;
+		void *p;
+		vmaMapMemory(allocator, allocation, &p);
+		return p;
+	}
+	void UnmapMemory() const
+	{
+		if (allocInfo.pMappedData != nullptr)
+			return;
+		// Only needed (and useful) for non-host coherent memory
+		vmaFlushAllocation(allocator, allocation, allocInfo.offset, allocInfo.size);
+		vmaUnmapMemory(allocator, allocation);
 	}
 
 private:
@@ -78,7 +91,7 @@ private:
 class VMAllocator
 {
 public:
-	void Init(vk::PhysicalDevice physicalDevice, vk::Device device);
+	void Init(vk::PhysicalDevice physicalDevice, vk::Device device, vk::Instance instance);
 
 	void Term()
 	{
@@ -95,7 +108,7 @@ public:
 		VmaAllocationInfo allocInfo;
 		VkResult rc = vmaAllocateMemory(allocator, (VkMemoryRequirements*)&memoryRequirements, &allocCreateInfo, &vmaAllocation, &allocInfo);
 		if (rc != VK_SUCCESS)
-			throwResultException((vk::Result)rc, "vmaAllocateMemory failed");
+			vk::throwResultException((vk::Result)rc, "vmaAllocateMemory failed");
 		return Allocation(allocator, vmaAllocation, allocInfo);
 	}
 
@@ -105,7 +118,7 @@ public:
 		VmaAllocationInfo allocInfo;
 		VkResult rc = vmaAllocateMemoryForImage(allocator, (VkImage)image, &allocCreateInfo, &vmaAllocation, &allocInfo);
 		if (rc != VK_SUCCESS)
-			throwResultException((vk::Result)rc, "vmaAllocateMemoryForImage failed");
+			vk::throwResultException((vk::Result)rc, "vmaAllocateMemoryForImage failed");
 		vmaBindImageMemory(allocator, vmaAllocation, (VkImage)image);
 
 		return Allocation(allocator, vmaAllocation, allocInfo);
@@ -117,18 +130,10 @@ public:
 		VmaAllocationInfo allocInfo;
 		VkResult rc = vmaAllocateMemoryForBuffer(allocator, (VkBuffer)buffer, &allocCreateInfo, &vmaAllocation, &allocInfo);
 		if (rc != VK_SUCCESS)
-			throwResultException((vk::Result)rc, "vmaAllocateMemoryForBuffer failed");
+			vk::throwResultException((vk::Result)rc, "vmaAllocateMemoryForBuffer failed");
 		vmaBindBufferMemory(allocator, vmaAllocation, (VkBuffer)buffer);
 
 		return Allocation(allocator, vmaAllocation, allocInfo);
-	}
-
-	void PrintStats() const
-	{
-		VmaStats stats;
-		vmaCalculateStats(allocator, &stats);
-		NOTICE_LOG(RENDERER, "Vma stats: %d chunks, %d allocs, %" PRIu64 " bytes used, %" PRIu64 " free", stats.total.blockCount,
-				stats.total.allocationCount, stats.total.usedBytes, stats.total.unusedBytes);
 	}
 
 private:

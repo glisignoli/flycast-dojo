@@ -23,6 +23,9 @@
 #include <cmath>
 #include "cfg.h"
 #include "hw/maple/maple_cfg.h"
+#ifdef LIBRETRO
+#include <libretro.h>
+#endif
 
 namespace config {
 
@@ -33,6 +36,10 @@ public:
 	virtual void load() = 0;
 	virtual void reset() = 0;
 };
+
+#ifdef LIBRETRO
+#include "option_lr.h"
+#else
 
 class Settings {
 public:
@@ -61,10 +68,6 @@ public:
 		for (const auto& o : options)
 			o->save();
 		cfgSetAutoSave(true);
-	}
-
-	const std::string& getGameId() const {
-		return gameId;
 	}
 
 	void setGameId(const std::string& gameId) {
@@ -118,7 +121,7 @@ public:
 
 	void load() override {
 		if (PerGameOption && settings.hasPerGameConfig())
-			set(doLoad(settings.getGameId(), section + "." + name));
+			set(doLoad(settings.gameId, section + "." + name));
 		else
 		{
 			set(doLoad(section, name));
@@ -139,10 +142,14 @@ public:
 		else if (PerGameOption && settings.hasPerGameConfig())
 		{
 			if (value == doLoad(section, name))
+			{
+				// delete existing per-game option if any
+				cfgDeleteEntry(settings.gameId, section + "." + name);
 				return;
+			}
 		}
 		if (PerGameOption && settings.hasPerGameConfig())
-			doSave(settings.getGameId(), section + "." + name);
+			doSave(settings.gameId, section + "." + name);
 		else
 			doSave(section, name);
 	}
@@ -173,8 +180,15 @@ protected:
 	}
 
 	template <typename U = T>
+	enable_if_t<std::is_same<U, int64_t>::value, T>
+	doLoad(const std::string& section, const std::string& name) const
+	{
+		return cfgLoadInt64(section, name, value);
+	}
+
+	template <typename U = T>
 	enable_if_t<(std::is_integral<U>::value || std::is_enum<U>::value)
-			&& !std::is_same<U, bool>::value, T>
+			&& !std::is_same<U, bool>::value && !std::is_same<U, int64_t>::value, T>
 	doLoad(const std::string& section, const std::string& name) const
 	{
 		return (T)cfgLoadInt(section, name, (int)value);
@@ -195,7 +209,7 @@ protected:
 		if (strValue.empty())
 			return value;
 		else
-			return atof(strValue.c_str());
+			return (float)atof(strValue.c_str());
 	}
 
 	template <typename U = T>
@@ -209,14 +223,50 @@ protected:
 		std::vector<std::string> newValue;
 		while (true)
 		{
-			std::string::size_type end = paths.find(';', start);
-			if (end == std::string::npos)
-				end = paths.size();
-			if (start != end)
-				newValue.push_back(paths.substr(start, end - start));
-			if (end == paths.size())
-				break;
-			start = end + 1;
+			if (paths[start] == '"')
+			{
+				std::string v;
+				start++;
+				while (true)
+				{
+					if (paths[start] == '"')
+					{
+						if (start + 1 >= paths.size())
+						{
+							newValue.push_back(v);
+							return newValue;
+						}
+						if (paths[start + 1] == '"')
+						{
+							v += paths[start++];
+							start++;
+						}
+						else if (paths[start + 1] == ';')
+						{
+							newValue.push_back(v);
+							start += 2;
+							break;
+						}
+						else
+						{
+							v += paths[start++];
+						}
+					}
+					else
+						v += paths[start++];
+				}
+			}
+			else
+			{
+				std::string::size_type end = paths.find(';', start);
+				if (end == std::string::npos)
+					end = paths.size();
+				if (start != end)
+					newValue.push_back(paths.substr(start, end - start));
+				if (end == paths.size())
+					break;
+				start = end + 1;
+			}
 		}
 		return newValue;
 	}
@@ -229,8 +279,15 @@ protected:
 	}
 
 	template <typename U = T>
+	enable_if_t<std::is_same<U, int64_t>::value>
+	doSave(const std::string& section, const std::string& name) const
+	{
+		cfgSaveInt64(section, name, value);
+	}
+
+	template <typename U = T>
 	enable_if_t<(std::is_integral<U>::value || std::is_enum<U>::value)
-		&& !std::is_same<U, bool>::value>
+		&& !std::is_same<U, bool>::value && !std::is_same<U, int64_t>::value>
 	doSave(const std::string& section, const std::string& name) const
 	{
 		cfgSaveInt(section, name, (int)value);
@@ -257,12 +314,32 @@ protected:
 	doSave(const std::string& section, const std::string& name) const
 	{
 		std::string s;
-		for (auto& v : value)
+		for (const auto& v : value)
 		{
-			if (s.empty())
-				s = v;
+			if (!s.empty())
+				s += ';';
+			if (v.find(';') != std::string::npos || (!v.empty() && v[0] == '"'))
+			{
+				s += '"';
+				std::string v2 = v;
+				while (true)
+				{
+					auto pos = v2.find('"');
+					if (pos != std::string::npos)
+					{
+						s += v2.substr(0, pos + 1) + '"';
+						v2 = v2.substr(pos + 1);
+					}
+					else
+					{
+						s += v2;
+						break;
+					}
+				}
+				s += '"';
+			}
 			else
-				s += ";" + v;
+				s += v;
 		}
 		cfgSaveStr(section, name, s);
 	}
@@ -275,6 +352,7 @@ protected:
 	bool overridden = false;
 	Settings& settings;
 };
+#endif
 
 using OptionString = Option<std::string>;
 
@@ -282,7 +360,7 @@ using OptionString = Option<std::string>;
 
 extern Option<bool> DynarecEnabled;
 extern Option<bool> DynarecIdleSkip;
-extern Option<bool> DynarecSafeMode;
+constexpr bool DynarecSafeMode = false;
 
 // General
 
@@ -295,12 +373,14 @@ extern Option<bool> ForceWindowsCE;
 extern Option<bool> AutoLoadState;
 extern Option<bool> AutoSaveState;
 extern Option<int> SavestateSlot;
+extern Option<bool> ForceFreePlay;
+extern Option<bool> FetchBoxart;
+extern Option<bool> BoxartDisplayMode;
 
 // Sound
 
-constexpr bool LimitFPS = true;
+extern Option<bool> LimitFPS;
 extern Option<bool> DSPEnabled;
-extern Option<bool> DisableSound;
 extern Option<int> AudioBufferSize;	//In samples ,*4 for bytes
 extern Option<bool> AutoLatency;
 
@@ -308,7 +388,7 @@ extern OptionString AudioBackend;
 
 class AudioVolumeOption : public Option<int> {
 public:
-	AudioVolumeOption() : Option<int>("aica.Volume", 100) {};
+	AudioVolumeOption() : Option<int>("aica.Volume", 75) {};
 	float logarithmic_volume_scale = 1.0;
 
 	void load() override {
@@ -323,9 +403,9 @@ public:
 	void calcDbPower()
 	{
 		// dB scaling calculation: https://www.dr-lex.be/info-stuff/volumecontrols.html
-		logarithmic_volume_scale = fmin(exp(4.605 * float(value) / 100.0) / 100.0, 1.0);
+		logarithmic_volume_scale = std::min(std::exp(4.605f * float(value) / 100.f) / 100.f, 1.f);
 		if (value < 10)
-			logarithmic_volume_scale *= value / 10.0;
+			logarithmic_volume_scale *= value / 10.f;
 	}
 };
 extern AudioVolumeOption AudioVolume;
@@ -335,49 +415,20 @@ extern AudioVolumeOption AudioVolume;
 class RendererOption : public Option<RenderType> {
 public:
 	RendererOption()
-#ifdef _WIN32
-		: Option<RenderType>("pvr.rend", RenderType::DirectX9) {}
+#if defined(_WIN32) or defined(TARGET_UWP)
+		: Option<RenderType>("pvr.rend", RenderType::DirectX11) {}
+#elif defined(__ANDROID__)
+		: Option<RenderType>("pvr.rend", RenderType::Vulkan) {}
 #else
 		: Option<RenderType>("pvr.rend", RenderType::OpenGL) {}
 #endif
 
-	bool isOpenGL() const {
-		return value == RenderType::OpenGL || value == RenderType::OpenGL_OIT;
-	}
-	bool isVulkan() const {
-		return value == RenderType::Vulkan || value == RenderType::Vulkan_OIT;
-	}
-	bool isDirectX() const {
-		return value == RenderType::DirectX9;
-	}
-
-	void set(RenderType v)
-	{
-		newValue = v;
-	}
 	RenderType& operator=(const RenderType& v) { set(v); return value; }
 
-	void load() override {
-		RenderType current = value;
-		Option<RenderType>::load();
-		newValue = value;
-		value = current;
-	}
-
 	void reset() override {
-		// don't reset the value to avoid vk -> gl -> vk quick switching
+		// don't reset the value to avoid quick switching when starting a game
 		overridden = false;
 	}
-
-	bool pendingChange() {
-		return newValue != value;
-	}
-	void commit() {
-		value = newValue;
-	}
-
-private:
-	RenderType newValue = RenderType();
 };
 extern RendererOption RendererType;
 extern Option<bool> UseMipmaps;
@@ -388,8 +439,11 @@ extern Option<bool> RenderToTextureBuffer;
 extern Option<bool> TranslucentPolygonDepthMask;
 extern Option<bool> ModifierVolumes;
 constexpr bool Clipping = true;
+#ifndef LIBRETRO
 extern Option<int> TextureUpscale;
 extern Option<int> MaxFilteredTextureSize;
+extern Option<int> PerPixelLayers;
+#endif
 extern Option<float> ExtraDepthScale;
 extern Option<bool> CustomTextures;
 extern Option<bool> DumpTextures;
@@ -406,17 +460,28 @@ extern Option<int> MaxThreads;
 extern Option<int> AutoSkipFrame;		// 0: none, 1: some, 2: more
 extern Option<int> RenderResolution;
 extern Option<bool> VSync;
+extern Option<int64_t> PixelBufferSize;
+extern Option<int> AnisotropicFiltering;
+extern Option<int> TextureFiltering; // 0: default, 1: force nearest, 2: force linear
+extern Option<bool> ThreadedRendering;
+extern Option<bool> DupeFrames;
+extern Option<bool> NativeDepthInterpolation;
+extern Option<int> FixedFrequency; // 0: off, 1: auto, 2: 59.94Hz, 3: 60Hz, 4: 50Hz
+extern Option<bool> FixedFrequencyThreadSleep;
 
 // Misc
 
 extern Option<bool> SerialConsole;
 extern Option<bool> SerialPTY;
 extern Option<bool> UseReios;
+extern Option<bool> FastGDRomLoad;
 
 extern Option<bool> OpenGlChecks;
 
 extern Option<std::vector<std::string>, false> ContentPath;
 extern Option<bool, false> HideLegacyNaomiRoms;
+
+extern Option<bool> ShowEjectDisk;
 
 // Network
 
@@ -424,7 +489,20 @@ extern Option<bool> NetworkEnable;
 extern Option<bool> ActAsServer;
 extern OptionString DNS;
 extern OptionString NetworkServer;
+extern Option<int> LocalPort;
 extern Option<bool> EmulateBBA;
+extern Option<bool> EnableUPnP;
+extern Option<bool> GGPOEnable;
+extern Option<int> GGPOPort;
+extern Option<int> GGPODelay;
+extern Option<bool> NetworkStats;
+extern Option<int> GGPOAnalogAxes;
+extern Option<int> GGPORemotePort;
+extern Option<bool> GGPOChat;
+extern Option<bool> GGPOChatTimeoutToggle;
+extern Option<bool> GGPOChatTimeoutToggleSend;
+extern Option<int> GGPOChatTimeout;
+extern Option<bool> NetworkOutput;
 
 #ifdef SUPPORT_DISPMANX
 extern Option<bool> DispmanxMaintainAspect;
@@ -475,8 +553,19 @@ extern Option<bool> LaunchReplay;
 extern Option<bool> TransmitReplays;
 extern Option<bool> Training;
 extern Option<bool> EnableSessionQuickLoad;
-extern OptionString GameEntry;
 extern OptionString Quark;
+extern Option<bool> PlayerSwitched;
+extern OptionString NetplayMethod;
+extern OptionString NetSaveBase;
+extern Option<bool> NetStartVerifyRoms;
+extern Option<bool> ShowPublicIP;
+extern Option<bool> ShowInputDisplay;
+extern Option<bool> ShowReplayInputDisplay;
+extern Option<bool> UseAnimeInputNotation;
+extern Option<bool> HideRandomInputSlot;
+extern Option<bool> BufferAutoResume;
+extern Option<bool> RecordOnFirstInput;
+extern Option<bool> ForceRealBios;
 
 // Maple
 
@@ -490,5 +579,8 @@ extern Option<bool> UseRawInput;
 constexpr bool UseRawInput = false;
 #endif
 
-} // namespace config
+#ifdef USE_LUA
+extern OptionString LuaFileName;
+#endif
 
+} // namespace config

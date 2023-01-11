@@ -6,7 +6,7 @@
 
 TLB_Entry UTLB[64];
 TLB_Entry ITLB[4];
-u32 ITLB_LRU_USE[64];
+static u32 ITLB_LRU_USE[64];
 
 //SQ fast remap , mainly hackish , assumes 1MB pages
 //max 64MB can be remapped on SQ
@@ -512,6 +512,8 @@ void mmu_set_state()
 	SetMemoryHandlers();
 }
 
+u32 mmuAddressLUT[0x100000];
+
 void MMU_init()
 {
 	memset(ITLB_LRU_USE, 0xFF, sizeof(ITLB_LRU_USE));
@@ -530,7 +532,7 @@ void MMU_init()
 	}
 	mmu_set_state();
 	// pre-fill kernel memory
-	for (int vpn = ARRAY_SIZE(mmuAddressLUT) / 2; vpn < ARRAY_SIZE(mmuAddressLUT); vpn++)
+	for (u32 vpn = ARRAY_SIZE(mmuAddressLUT) / 2; vpn < ARRAY_SIZE(mmuAddressLUT); vpn++)
 		mmuAddressLUT[vpn] = vpn << 12;
 }
 

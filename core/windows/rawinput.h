@@ -16,9 +16,11 @@
     You should have received a copy of the GNU General Public License
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
 */
+#include "build.h"
+#ifndef TARGET_UWP
 #include "input/gamepad_device.h"
 #include "input/keyboard_device.h"
-#include "rend/gui.h"
+#include "input/mouse.h"
 #include <windows.h>
 
 #include <algorithm>
@@ -53,7 +55,7 @@ public:
 	}
 
 protected:
-	virtual u8 convert_keycode(u8 scancode) override
+	u8 convert_keycode(u8 scancode) override
 	{
 		if (settings.input.keyboardLangId != KeyboardLayout::US && scancode == 0x31)	// US: backslash and pipe
 			return (u8)0x32;	// non-US: hash and tilde
@@ -68,3 +70,4 @@ void init();
 void term();
 
 }
+#endif

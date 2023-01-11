@@ -17,6 +17,7 @@
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
 */
 #include "option.h"
+#include "network/naomi_network.h"
 
 namespace config {
 
@@ -24,7 +25,6 @@ namespace config {
 
 Option<bool> DynarecEnabled("Dynarec.Enabled", true);
 Option<bool> DynarecIdleSkip("Dynarec.idleskip", true);
-Option<bool> DynarecSafeMode("Dynarec.safe-mode");
 
 // General
 
@@ -37,11 +37,14 @@ Option<bool> ForceWindowsCE("Dreamcast.ForceWindowsCE");
 Option<bool> AutoLoadState("Dreamcast.AutoLoadState");
 Option<bool> AutoSaveState("Dreamcast.AutoSaveState");
 Option<int> SavestateSlot("Dreamcast.SavestateSlot");
+Option<bool> ForceFreePlay("ForceFreePlay", true);
+Option<bool> FetchBoxart("FetchBoxart", true);
+Option<bool> BoxartDisplayMode("BoxartDisplayMode", true);
 
 // Sound
 
+Option<bool> LimitFPS("aica.LimitFPS", false);
 Option<bool> DSPEnabled("aica.DSPEnabled", false);
-Option<bool> DisableSound("aica.NoSound");
 #if HOST_CPU == CPU_ARM
 Option<int> AudioBufferSize("aica.BufferSize", 5644);	// 128 ms
 #else
@@ -55,7 +58,7 @@ Option<bool> AutoLatency("aica.AutoLatency",
 #endif
 		);
 
-OptionString AudioBackend("backend", "auto", "audio");
+OptionString AudioBackend("backend", "sdl2", "audio");
 AudioVolumeOption AudioVolume;
 
 // Rendering
@@ -78,7 +81,7 @@ Option<bool> Fog("rend.Fog", true);
 Option<bool> FloatVMUs("rend.FloatVMUs");
 Option<bool> Rotate90("rend.Rotate90");
 Option<bool> PerStripSorting("rend.PerStripSorting");
-Option<bool> DelayFrameSwapping("rend.DelayFrameSwapping", true);
+Option<bool> DelayFrameSwapping("rend.DelayFrameSwapping", false);
 Option<bool> WidescreenGameHacks("rend.WidescreenGameHacks");
 std::array<Option<int>, 4> CrosshairColor {
 	Option<int>("rend.CrossHairColor1"),
@@ -86,22 +89,38 @@ std::array<Option<int>, 4> CrosshairColor {
 	Option<int>("rend.CrossHairColor3"),
 	Option<int>("rend.CrossHairColor4"),
 };
-Option<int> SkipFrame("ta.skip");
+Option<int> SkipFrame("ta.skip", 0);
 Option<int> MaxThreads("pvr.MaxThreads", 3);
 Option<int> AutoSkipFrame("pvr.AutoSkipFrame", 0);
 Option<int> RenderResolution("rend.Resolution", 480);
 Option<bool> VSync("rend.vsync", false);
+Option<int64_t> PixelBufferSize("rend.PixelBufferSize", 512 * 1024 * 1024);
+Option<int> AnisotropicFiltering("rend.AnisotropicFiltering", 1);
+Option<int> TextureFiltering("rend.TextureFiltering", 0); // Default
+#ifdef __ANDROID__
+Option<bool> ThreadedRendering("rend.ThreadedRendering", true);
+#else
+Option<bool> ThreadedRendering("rend.ThreadedRendering", false);
+#endif
+Option<bool> DupeFrames("rend.DupeFrames", false);
+Option<int> PerPixelLayers("rend.PerPixelLayers", 32);
+Option<bool> NativeDepthInterpolation("rend.NativeDepthInterpolation", false);
+Option<int> FixedFrequency ("rend.FixedFrequency", 1);
+Option<bool> FixedFrequencyThreadSleep("rend.FixedFrequencyThreadSleep", true);
 
 // Misc
 
 Option<bool> SerialConsole("Debug.SerialConsoleEnabled");
 Option<bool> SerialPTY("Debug.SerialPTY");
 Option<bool> UseReios("UseReios");
+Option<bool> FastGDRomLoad("FastGDRomLoad", false);
 
 Option<bool> OpenGlChecks("OpenGlChecks", false, "validate");
 
 Option<std::vector<std::string>, false> ContentPath("Dreamcast.ContentPath");
 Option<bool, false> HideLegacyNaomiRoms("Dreamcast.HideLegacyNaomiRoms", false);
+
+Option<bool> ShowEjectDisk("ShowEjectDisk", false);
 
 // Network
 
@@ -109,7 +128,20 @@ Option<bool> NetworkEnable("Enable", false, "network");
 Option<bool> ActAsServer("ActAsServer", false, "network");
 OptionString DNS("DNS", "46.101.91.123", "network");
 OptionString NetworkServer("server", "", "network");
+Option<int> LocalPort("LocalPort", NaomiNetwork::SERVER_PORT, "network");
 Option<bool> EmulateBBA("EmulateBBA", false, "network");
+Option<bool> EnableUPnP("EnableUPnP", false, "network");
+Option<bool> GGPOEnable("GGPO", false, "network");
+Option<int> GGPOPort("GGPOPort", 19713, "network");
+Option<int> GGPODelay("GGPODelay", 0, "network");
+Option<bool> NetworkStats("Stats", true, "network");
+Option<int> GGPOAnalogAxes("GGPOAnalogAxes", 0, "network");
+Option<int> GGPORemotePort("GGPORemotePort", 19713, "network");
+Option<bool> GGPOChat("GGPOChat", true, "network");
+Option<bool> GGPOChatTimeoutToggle("GGPOChatTimeoutToggle", true, "network");
+Option<bool> GGPOChatTimeoutToggleSend("GGPOChatTimeoutToggleSend", false, "network");
+Option<int> GGPOChatTimeout("GGPOChatTimeout", 10, "network");
+Option<bool> NetworkOutput("NetworkOutput", false, "network");
 
 // Dojo
 
@@ -140,10 +172,10 @@ OptionString MatchmakingServerAddress("MatchmakingServerAddress", "match.dojo.oo
 OptionString MatchmakingServerPort("MatchmakingServerPort", "52001", "dojo");
 OptionString MatchCode("MatchCode", "", "dojo");
 OptionString GameName("GameName", "", "dojo");
-Option<bool> EnableMemRestore("EnableMemRestore", true, "dojo");
+Option<bool> EnableMemRestore("EnableMemRestore", false, "dojo");
 OptionString DojoProtoCall("DojoProtoCall", "", "dojo");
 Option<bool> EnablePlayerNameOverlay("EnablePlayerNameOverlay", true, "dojo");
-Option<bool> IgnoreNetSave("IgnoreNetSave", true, "dojo");
+Option<bool> IgnoreNetSave("IgnoreNetSave", false, "dojo");
 Option<bool> NetCustomVmu("NetCustomVmu", false, "dojo");
 Option<bool> ShowPlaybackControls("ShowPlaybackControls", true, "dojo");
 Option<int> RxFrameBuffer("RxFrameBuffer", 1800, "dojo");
@@ -151,10 +183,22 @@ Option<bool> LaunchReplay("LaunchReplay", false, "dojo");
 Option<bool> TransmitReplays("TransmitReplays", false, "dojo");
 Option<bool> Training("Training", false, "dojo");
 Option<bool> EnableSessionQuickLoad("EnableSessionQuickLoad", false, "dojo");
-OptionString GameEntry("GameEntry", "", "dojo");
 OptionString Quark("Quark", "", "dojo");
+Option<bool> PlayerSwitched("PlayerSwitched", false, "dojo");
+OptionString NetplayMethod("NetplayMethod", "GGPO", "dojo");
+OptionString NetSaveBase("NetSaveBase", "https://github.com/blueminder/flycast-netplay-savestates/raw/main/", "dojo");
+Option<bool> NetStartVerifyRoms("NetStartVerifyRoms", false, "dojo");
+Option<bool> ShowPublicIP("ShowPublicIP", false, "dojo");
+Option<bool> ShowInputDisplay("ShowInputDisplay", true, "dojo");
+Option<bool> ShowReplayInputDisplay("ShowReplayInputDisplay", false, "dojo");
+Option<bool> UseAnimeInputNotation("UseAnimeInputNotation", false, "dojo");
+Option<bool> HideRandomInputSlot("HideRandomInputSlot", true, "dojo");
+Option<bool> BufferAutoResume("BufferAutoResume", true, "dojo");
+Option<bool> RecordOnFirstInput("RecordOnFirstInput", false, "dojo");
+Option<bool> ForceRealBios("ForceRealBios", false, "dojo");
 
 Option<int> EnableMouseCaptureToggle ("EnableMouseCaptureToggle", false, "input");
+
 
 #ifdef SUPPORT_DISPMANX
 Option<bool> DispmanxMaintainAspect("maintain_aspect", true, "dispmanx");
@@ -191,6 +235,10 @@ std::array<std::array<Option<MapleDeviceType>, 2>, 4> MapleExpansionDevices {
 };
 #ifdef _WIN32
 Option<bool> UseRawInput("RawInput", false, "input");
+#endif
+
+#ifdef USE_LUA
+OptionString LuaFileName("LuaFileName", "flycast.lua");
 #endif
 
 } // namespace config

@@ -16,6 +16,7 @@
     You should have received a copy of the GNU General Public License
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
 */
+#pragma once
 #include "rend/TexCache.h"
 #include <d3d9.h>
 #include "dxcontext.h"
@@ -23,9 +24,14 @@
 class D3DTexture final : public BaseTextureCacheData
 {
 public:
+	D3DTexture(TSP tsp = {}, TCW tcw = {}) : BaseTextureCacheData(tsp, tcw) {}
+	D3DTexture(D3DTexture&& other) : BaseTextureCacheData(std::move(other)) {
+		std::swap(texture, other.texture);
+	}
+
 	ComPtr<IDirect3DTexture9> texture;
 	std::string GetId() override { return std::to_string((uintptr_t)texture.get()); }
-	void UploadToGPU(int width, int height, u8* temp_tex_buffer, bool mipmapped,
+	void UploadToGPU(int width, int height, const u8* temp_tex_buffer, bool mipmapped,
 			bool mipmapsIncluded = false) override;
 	bool Delete() override;
 	void loadCustomTexture();

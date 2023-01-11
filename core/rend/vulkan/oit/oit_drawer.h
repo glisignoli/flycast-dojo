@@ -45,6 +45,7 @@ public:
 	virtual void EndFrame() {  renderPass++; };
 
 protected:
+	u32 GetSwapChainSize() { return 2; }
 	void Init(SamplerManager *samplerManager, OITPipelineManager *pipelineManager, OITBuffers *oitBuffers)
 	{
 		this->pipelineManager = pipelineManager;
@@ -52,18 +53,11 @@ protected:
 		if (!quadBuffer)
 			quadBuffer = std::unique_ptr<QuadBuffer>(new QuadBuffer());
 		this->oitBuffers = oitBuffers;
-		if (descriptorSets.size() > GetContext()->GetSwapChainSize())
-			descriptorSets.resize(GetContext()->GetSwapChainSize());
-		else
-			while (descriptorSets.size() < GetContext()->GetSwapChainSize())
-			{
-				descriptorSets.emplace_back();
-				descriptorSets.back().Init(samplerManager,
-						pipelineManager->GetPipelineLayout(),
-						pipelineManager->GetPerFrameDSLayout(),
-						pipelineManager->GetPerPolyDSLayout(),
-						pipelineManager->GetColorInputDSLayout());
-			}
+		descriptorSets.init(samplerManager,
+				pipelineManager->GetPipelineLayout(),
+				pipelineManager->GetPerFrameDSLayout(),
+				pipelineManager->GetPerPolyDSLayout(),
+				pipelineManager->GetColorInputDSLayout());
 	}
 	void Term()
 	{
@@ -75,23 +69,21 @@ protected:
 		depthAttachments[0].reset();
 		depthAttachments[1].reset();
 		mainBuffers.clear();
-		descriptorSets.clear();
+		descriptorSets.term();
 	}
 
 	int GetCurrentImage() const { return imageIndex; }
 
 	void NewImage()
 	{
-		GetCurrentDescSet().Reset();
-		imageIndex = (imageIndex + 1) % GetContext()->GetSwapChainSize();
+		descriptorSets.nextFrame();
+		imageIndex = (imageIndex + 1) % GetSwapChainSize();
 		renderPass = 0;
 	}
 
-	OITDescriptorSets& GetCurrentDescSet() { return descriptorSets[GetCurrentImage()]; }
-
 	BufferData* GetMainBuffer(u32 size)
 	{
-		u32 bufferIndex = imageIndex + renderPass * GetContext()->GetSwapChainSize();
+		u32 bufferIndex = imageIndex + renderPass * GetSwapChainSize();
 		while (mainBuffers.size() <= bufferIndex)
 		{
 			mainBuffers.push_back(std::unique_ptr<BufferData>(new BufferData(std::max(512 * 1024u, size),
@@ -100,7 +92,7 @@ protected:
 		}
 		if (mainBuffers[bufferIndex]->bufferSize < size)
 		{
-			u32 newSize = mainBuffers[bufferIndex]->bufferSize;
+			u32 newSize = (u32)mainBuffers[bufferIndex]->bufferSize;
 			while (newSize < size)
 				newSize *= 2;
 			INFO_LOG(RENDERER, "Increasing main buffer size %d -> %d", (u32)mainBuffers[bufferIndex]->bufferSize, newSize);
@@ -109,7 +101,7 @@ protected:
 					| vk::BufferUsageFlagBits::eStorageBuffer));
 		}
 		return mainBuffers[bufferIndex].get();
-	};
+	}
 
 	void MakeBuffers(int width, int height);
 	virtual vk::Format GetColorFormat() const = 0;
@@ -127,7 +119,7 @@ private:
 	void DrawList(const vk::CommandBuffer& cmdBuffer, u32 listType, bool sortTriangles, Pass pass,
 			const List<PolyParam>& polys, u32 first, u32 last);
 	template<bool Translucent>
-	void DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int first, int count);
+	void DrawModifierVolumes(const vk::CommandBuffer& cmdBuffer, int first, int count, const ModifierVolumeParam *modVolParams);
 	void UploadMainBuffer(const OITDescriptorSets::VertexShaderUniforms& vertexUniforms,
 			const OITDescriptorSets::FragmentShaderUniforms& fragmentUniforms);
 
@@ -138,6 +130,12 @@ private:
 		vk::DeviceSize fragmentUniformOffset = 0;
 		vk::DeviceSize polyParamsOffset = 0;
 		vk::DeviceSize polyParamsSize = 0;
+		vk::DeviceSize naomi2OpaqueOffset = 0;
+		vk::DeviceSize naomi2PunchThroughOffset = 0;
+		vk::DeviceSize naomi2TranslucentOffset = 0;
+		vk::DeviceSize naomi2ModVolOffset = 0;
+		vk::DeviceSize naomi2TrModVolOffset = 0;
+		vk::DeviceSize lightsOffset = 0;
 	} offsets;
 
 	std::unique_ptr<QuadBuffer> quadBuffer;
@@ -152,7 +150,7 @@ private:
 	bool needDepthTransition = false;
 	int imageIndex = 0;
 	int renderPass = 0;
-	std::vector<OITDescriptorSets> descriptorSets;
+	OITDescriptorSets descriptorSets;
 	std::vector<std::unique_ptr<BufferData>> mainBuffers;
 };
 
@@ -168,7 +166,7 @@ public:
 		OITDrawer::Init(samplerManager, screenPipelineManager.get(), oitBuffers);
 
 		MakeFramebuffers(viewport);
-		GetContext()->PresentFrame(vk::ImageView(), viewport);
+		GetContext()->PresentFrame(vk::Image(), vk::ImageView(), viewport);
 	}
 	void Term()
 	{
@@ -194,11 +192,14 @@ public:
 		if (!frameRendered)
 			return false;
 		frameRendered = false;
-		GetContext()->PresentFrame(finalColorAttachments[GetCurrentImage()]->GetImageView(), viewport.extent);
+		GetContext()->PresentFrame(finalColorAttachments[GetCurrentImage()]->GetImage(),
+				finalColorAttachments[GetCurrentImage()]->GetImageView(), viewport.extent);
 		NewImage();
 
 		return true;
 	}
+	vk::RenderPass GetRenderPass() const { return screenPipelineManager->GetRenderPass(false, true); }
+	vk::CommandBuffer GetCurrentCommandBuffer() const { return currentCommandBuffer; }
 
 protected:
 	vk::Framebuffer GetFinalFramebuffer() const override { return *framebuffers[GetCurrentImage()]; }

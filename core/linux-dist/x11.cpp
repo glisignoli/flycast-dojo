@@ -8,8 +8,10 @@
 #include "x11.h"
 #include "rend/gui.h"
 #include "input/gamepad.h"
+#include "input/mouse.h"
 #include "icon.h"
 #include "wsi/context.h"
+#include "wsi/gl_context.h"
 #include "hw/maple/maple_devs.h"
 #include "emulator.h"
 
@@ -45,8 +47,6 @@ int x11_height;
 
 static bool x11_fullscreen = false;
 static Atom wmDeleteMessage;
-
-extern bool dump_frame_switch;
 
 enum
 {
@@ -196,15 +196,6 @@ void input_x11_handle()
 						else
 							x11_uncapture_mouse();
 					}
-					// TODO Move this to bindable keys or in the gui menu
-#if 0
-					if (e.xkey.keycode == KEY_F10)
-					{
-						// Dump the next frame into a file
-						dump_frame_switch = e.type == KeyPress;
-					}
-					else
-#endif
 					if (e.type == KeyPress && e.xkey.keycode == KEY_F11)
 					{
 						x11_fullscreen = !x11_fullscreen;
@@ -288,7 +279,7 @@ void x11_window_create()
 		int x11Screen = XDefaultScreen(x11_disp);
 		float xdpi = (float)DisplayWidth(x11_disp, x11Screen) / DisplayWidthMM(x11_disp, x11Screen) * 25.4;
 		float ydpi = (float)DisplayHeight(x11_disp, x11Screen) / DisplayHeightMM(x11_disp, x11Screen) * 25.4;
-		screen_dpi = std::max(xdpi, ydpi);
+		settings.display.dpi = std::max(xdpi, ydpi);
 
 		int depth = CopyFromParent;
 
@@ -369,11 +360,7 @@ void x11_window_create()
 		{
 			XMapWindow(x11_disp, x11_win);
 		}
-		theGLContext.SetDisplayAndWindow(x11_disp, x11_win);
-#ifdef USE_VULKAN
-		theVulkanContext.SetWindow((void *)x11_win, (void *)x11_disp);
-#endif
-		InitRenderApi();
+		initRenderApi((void *)x11_win, (void *)x11_disp);
 
 		XFlush(x11_disp);
 
@@ -400,7 +387,7 @@ void x11_window_set_text(const char* text)
 void x11_window_destroy()
 {
 	destroy_empty_cursor();
-	TermRenderApi();
+	termRenderApi();
 
 	// close XWindow
 	if (x11_win)

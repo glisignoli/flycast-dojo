@@ -23,6 +23,8 @@
 #include "buffer.h"
 #include "shaders.h"
 
+#include <memory>
+
 struct QuadVertex
 {
 	f32 pos[3];
@@ -41,8 +43,7 @@ public:
 
 	void Bind(vk::CommandBuffer commandBuffer)
 	{
-		const vk::DeviceSize zero = 0;
-		commandBuffer.bindVertexBuffers(0, 1, &buffer->buffer.get(), &zero);
+		commandBuffer.bindVertexBuffers(0, buffer->buffer.get(), {0});
 	}
 	void Draw(vk::CommandBuffer commandBuffer)
 	{
@@ -70,9 +71,10 @@ private:
 class QuadPipeline
 {
 public:
-	QuadPipeline(bool withAlpha = false, bool rotate = false) : withAlpha(withAlpha), rotate(rotate) {}
-	void Init(ShaderManager *shaderManager, vk::RenderPass renderPass);
-	void Init(const QuadPipeline& other) { Init(other.shaderManager, other.renderPass); }
+	QuadPipeline(bool ignoreTexAlpha, bool rotate = false)
+		: rotate(rotate), ignoreTexAlpha(ignoreTexAlpha) {}
+	void Init(ShaderManager *shaderManager, vk::RenderPass renderPass, int subpass);
+	void Init(const QuadPipeline& other) { Init(other.shaderManager, other.renderPass, other.subpass); }
 	void Term() {
 		pipeline.reset();
 		linearSampler.reset();
@@ -96,14 +98,15 @@ private:
 	void CreatePipeline();
 
 	vk::RenderPass renderPass;
+	int subpass = 0;
 	vk::UniquePipeline pipeline;
 	vk::UniqueSampler linearSampler;
 	vk::UniqueSampler nearestSampler;
 	vk::UniquePipelineLayout pipelineLayout;
 	vk::UniqueDescriptorSetLayout descSetLayout;
 	ShaderManager *shaderManager = nullptr;
-	bool withAlpha;
 	bool rotate;
+	bool ignoreTexAlpha;
 };
 
 class QuadDrawer

@@ -77,14 +77,14 @@ public:
 	{
 		if (pc != 1)
 			Sh4cntx.pc = pc;
-		dc_resume();
+		emu.start();
 	}
 
 	void step()
 	{
 		bool restoreBreakpoint = removeMatchpoint(0, Sh4cntx.pc, 2);
 		u32 savedPc = Sh4cntx.pc;
-		dc_step();
+		emu.step();
 		if (restoreBreakpoint)
 			insertMatchpoint(0, savedPc, 2);
 	}
@@ -222,7 +222,7 @@ public:
 	{
 		config::DynarecEnabled = false;
 		exception = SIGINT;
-		dc_stop();
+		emu.stop();
 		return exception;
 	}
 
@@ -236,7 +236,7 @@ public:
 	void postDebugTrap()
 	{
 		// needed to join the emu thread since debugTrap() is called by it
-		dc_stop();
+		emu.stop();
 	}
 
 	u32 currentException()
@@ -246,14 +246,14 @@ public:
 
 	void restart()
 	{
-		dc_stop();
-		dc_reset(true);
-		dc_resume();
+		emu.unloadGame();
+		emu.loadGame(settings.content.path.c_str());
+		emu.start();
 	}
 
 	void detach()
 	{
-		dc_resume();
+		emu.start();
 	}
 
 	void kill()
@@ -295,7 +295,10 @@ public:
 	{
 		verify(!Sh4cntx.CpuRunning);
 		size = stack.size() * 8;
-		return (const u32 *)&stack[0];
+		if (!stack.empty())
+			return (const u32 *)&stack[0];
+		else
+			return nullptr;
 	}
 
 	void subroutineCall()

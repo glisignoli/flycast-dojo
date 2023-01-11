@@ -6,6 +6,8 @@
 #include "input/gamepad_device.h"
 #include "oslib/oslib.h"
 #include "rend/TexCache.h"
+#include "hw/maple/maple_if.h"
+#include "serialize.h"
 
 //SPG emulation; Scanline/Raster beam registers & interrupts
 
@@ -15,7 +17,9 @@ static u32 pvr_numscanlines = 512;
 static u32 prv_cur_scanline = -1;
 static u32 vblk_cnt;
 
+#if !defined(NDEBUG) || defined(DEBUGFAST)
 static float last_fps;
+#endif
 
 //54 mhz pixel clock
 #define PIXEL_CLOCK (54*1000*1000/2)
@@ -34,30 +38,6 @@ static u32 lightgun_line = 0xffff;
 static u32 lightgun_hpos;
 static bool maple_int_pending;
 
-static void setFramebufferScaling()
-{
-	float scale_x = 1.f;
-	float scale_y = 1.f;
-
-	if (SPG_CONTROL.interlace)
-	{
-		//u32 interl_mode=VO_CONTROL.field_mode;
-		//if (interl_mode==2)//3 will be funny =P
-		//  scale_y=0.5f;//single interlace
-		//else
-			scale_y = 1.f;
-	}
-	else
-	{
-		if (FB_R_CTRL.vclk_div)
-			scale_y = 1.0f;//non interlaced VGA mode has full resolution :)
-		else
-			scale_y = 0.5f;//non interlaced modes have half resolution
-	}
-
-	rend_set_fb_scale(scale_x, scale_y);
-}
-
 void CalculateSync()
 {
 	u32 pixel_clock = PIXEL_CLOCK / (FB_R_CTRL.vclk_div ? 1 : 2);
@@ -70,10 +50,9 @@ void CalculateSync()
 	if (SPG_CONTROL.interlace)
 		Line_Cycles /= 2;
 
-	setFramebufferScaling();
-	
 	Frame_Cycles = pvr_numscanlines * Line_Cycles;
 	prv_cur_scanline = 0;
+	clc_pvr_scanline = 0;
 
 	sh4_sched_request(vblank_schid, Line_Cycles);
 }
@@ -97,13 +76,15 @@ int spg_line_sched(int tag, int cycl, int jit)
 			{
 				maple_int_pending = false;
 				SB_MDST = 0;
-				asic_RaiseInterrupt(holly_MAPLE_DMA);
 			}
 			asic_RaiseInterrupt(holly_SCANINT1);
 		}
 
 		if (SPG_VBLANK_INT.vblank_out_interrupt_line_number == prv_cur_scanline)
+		{
+			maple_vblank();
 			asic_RaiseInterrupt(holly_SCANINT2);
+		}
 
 		if (SPG_VBLANK.vstart == prv_cur_scanline)
 			in_vblank=1;
@@ -221,7 +202,6 @@ int spg_line_sched(int tag, int cycl, int jit)
 			maple_int_pending = false;
 			SPG_TRIGGER_POS = ((lightgun_line & 0x3FF) << 16) | (lightgun_hpos & 0x3FF);
 			SB_MDST = 0;
-			asic_RaiseInterrupt(holly_MAPLE_DMA);
 			lightgun_line = 0xffff;
 		}
 	}
@@ -251,6 +231,9 @@ int spg_line_sched(int tag, int cycl, int jit)
 	if (lightgun_line != 0xffff && min_scanline < lightgun_line)
 		min_active = std::min(min_active, lightgun_line);
 
+	if (SPG_HBLANK_INT.hblank_int_mode == 0 && min_scanline < SPG_HBLANK_INT.line_comp_val)
+		min_active = std::min(min_active, SPG_HBLANK_INT.line_comp_val);
+
 	min_active = std::max(min_active,min_scanline);
 
 	return (min_active - prv_cur_scanline) * Line_Cycles;
@@ -276,9 +259,18 @@ void read_lightgun_position(int x, int y)
 
 int rend_end_sch(int tag, int cycl, int jitt)
 {
-	asic_RaiseInterrupt(holly_RENDER_DONE);
-	asic_RaiseInterrupt(holly_RENDER_DONE_isp);
-	asic_RaiseInterrupt(holly_RENDER_DONE_vd);
+	if (settings.platform.isNaomi2())
+	{
+		asic_RaiseInterruptBothCLX(holly_RENDER_DONE);
+		asic_RaiseInterruptBothCLX(holly_RENDER_DONE_isp);
+		asic_RaiseInterruptBothCLX(holly_RENDER_DONE_vd);
+	}
+	else
+	{
+		asic_RaiseInterrupt(holly_RENDER_DONE);
+		asic_RaiseInterrupt(holly_RENDER_DONE_isp);
+		asic_RaiseInterrupt(holly_RENDER_DONE_vd);
+	}
 	rend_end_render();
 	return 0;
 }
@@ -293,6 +285,10 @@ bool spg_Init()
 
 void spg_Term()
 {
+	sh4_sched_unregister(render_end_schid);
+	render_end_schid = -1;
+	sh4_sched_unregister(vblank_schid);
+	vblank_schid = -1;
 }
 
 void spg_Reset(bool hard)
@@ -313,51 +309,48 @@ void SetREP(TA_context* cntx)
 		sh4_sched_request(render_end_schid, 4096);
 }
 
-void spg_Serialize(void **data, unsigned int *total_size)
+void spg_Serialize(Serializer& ser)
 {
-	REICAST_S(in_vblank);
-	REICAST_S(clc_pvr_scanline);
-	REICAST_S(maple_int_pending);
-	REICAST_S(pvr_numscanlines);
-	REICAST_S(prv_cur_scanline);
-	REICAST_S(Line_Cycles);
-	REICAST_S(Frame_Cycles);
-	REICAST_S(lightgun_line);
-	REICAST_S(lightgun_hpos);
+	ser << in_vblank;
+	ser << clc_pvr_scanline;
+	ser << maple_int_pending;
+	ser << pvr_numscanlines;
+	ser << prv_cur_scanline;
+	ser << Line_Cycles;
+	ser << Frame_Cycles;
+	ser << lightgun_line;
+	ser << lightgun_hpos;
 }
-
-void spg_Unserialize(void **data, unsigned int *total_size, serialize_version_enum version)
+void spg_Deserialize(Deserializer& deser)
 {
-	REICAST_US(in_vblank);
-	REICAST_US(clc_pvr_scanline);
-	if (version != VCUR_LIBRETRO && version < V5)
+	deser >> in_vblank;
+	deser >> clc_pvr_scanline;
+	if (deser.version() < Deserializer::V9_LIBRETRO)
 	{
-		u32 i;
-		REICAST_US(pvr_numscanlines);
-		REICAST_US(prv_cur_scanline);
-		REICAST_US(vblk_cnt);
-		REICAST_US(Line_Cycles);
-		REICAST_US(Frame_Cycles);
-		REICAST_SKIP(8);		// speed_load_mspdf
-		REICAST_US(i);			// mips_counter
-		REICAST_SKIP(8);		// full_rps
-		REICAST_US(i);			// fskip
+		deser >> pvr_numscanlines;
+		deser >> prv_cur_scanline;
+		deser >> vblk_cnt;
+		deser >> Line_Cycles;
+		deser >> Frame_Cycles;
+		deser.skip<double>();	// speed_load_mspdf
+		deser.skip<u32>();		// mips_counter
+		deser.skip<double>();	// full_rps
+		if (deser.version() <= Deserializer::V4)
+			deser.skip<u32>();	// fskip
 	}
-	else if (version >= V12)
+	else if (deser.version() >= Deserializer::V12)
 	{
-		REICAST_US(maple_int_pending);
-		if (version >= V14)
+		deser >> maple_int_pending;
+		if (deser.version() >= Deserializer::V14)
 		{
-			REICAST_US(pvr_numscanlines);
-			REICAST_US(prv_cur_scanline);
-			REICAST_US(Line_Cycles);
-			REICAST_US(Frame_Cycles);
-			REICAST_US(lightgun_line);
-			REICAST_US(lightgun_hpos);
+			deser >> pvr_numscanlines;
+			deser >> prv_cur_scanline;
+			deser >> Line_Cycles;
+			deser >> Frame_Cycles;
+			deser >> lightgun_line;
+			deser >> lightgun_hpos;
 		}
 	}
-	if (version < V14)
+	if (deser.version() < Deserializer::V14)
 		CalculateSync();
-	else
-		setFramebufferScaling();
 }

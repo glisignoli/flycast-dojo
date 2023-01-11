@@ -21,8 +21,6 @@
 #pragma once
 #include "types.h"
 
-#include "volk/volk.h"
-#undef VK_NO_PROTOTYPES
-#include "vulkan/vulkan.hpp"
+#include <vulkan/vulkan.hpp>
 
 //#define VK_DEBUG

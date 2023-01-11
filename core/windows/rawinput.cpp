@@ -17,15 +17,18 @@
     along with Flycast.  If not, see <https://www.gnu.org/licenses/>.
 */
 #include "rawinput.h"
+#ifndef TARGET_UWP
 #include <hidusage.h>
 #include <map>
+#include <cfgmgr32.h>
+#include <initguid.h>
+#include <devpkey.h>
 #include "hw/maple/maple_devs.h"
 
 #ifndef CALLBACK
 #define CALLBACK
 #endif
 
-extern int screen_width, screen_height;
 HWND getNativeHwnd();
 
 namespace rawinput {
@@ -206,7 +209,7 @@ RawMouse::RawMouse(int maple_port, const std::string& name, const std::string& u
 	std::replace(this->_unique_id.begin(), this->_unique_id.end(), ']', '_');
 	loadMapping();
 
-	setAbsPos(screen_width / 2, screen_height / 2, screen_width, screen_height);
+	setAbsPos(settings.display.width / 2, settings.display.height / 2, settings.display.width, settings.display.height);
 }
 
 void RawMouse::buttonInput(Button button, u16 flags, u16 downFlag, u16 upFlag)
@@ -225,7 +228,7 @@ void RawMouse::updateState(RAWMOUSE* state)
 
 		POINT pt { long(state->lLastX / 65535.0f * width), long(state->lLastY / 65535.0f * height) };
 		ScreenToClient(getNativeHwnd(), &pt);
-		setAbsPos(pt.x, pt.y, screen_width, screen_height);
+		setAbsPos(pt.x, pt.y, settings.display.width, settings.display.height);
 	}
 	else if (state->lLastX != 0 || state->lLastY != 0)
 		setRelPos(state->lLastX, state->lLastY);
@@ -324,6 +327,17 @@ static void destroyWindow()
 	UnregisterClassA("flycastRawInput", nullptr);
 }
 
+#ifndef _MSC_VER
+// missing from mingw's cfgmgr32.h
+extern "C" CMAPI CONFIGRET CM_Get_Device_Interface_PropertyW(
+  LPCWSTR          pszDeviceInterface,
+  const DEVPROPKEY *PropertyKey,
+  DEVPROPTYPE      *PropertyType,
+  PBYTE            PropertyBuffer,
+  PULONG           PropertyBufferSize,
+  ULONG            ulFlags);
+#endif
+
 static void findDevices()
 {
 	u32 numDevices;
@@ -338,10 +352,10 @@ static void findDevices()
 		RAWINPUTDEVICELIST& device = deviceList[i];
 		if (device.dwType == RIM_TYPEMOUSE || device.dwType == RIM_TYPEKEYBOARD)
 		{
-			// Get the device name
+			// Get the device interface instance id
 			std::string name;
 			std::string uniqueId;
-			u32 size;
+			u32 size = 0;
 			GetRawInputDeviceInfo(device.hDevice, RIDI_DEVICENAME, nullptr, &size);
 			if (size > 0)
 			{
@@ -349,13 +363,50 @@ static void findDevices()
 				u32 res = GetRawInputDeviceInfo(device.hDevice, RIDI_DEVICENAME, &deviceNameData[0], &size);
 				if (res != (u32)-1)
 				{
-					std::string deviceName(&deviceNameData[0], std::strlen(&deviceNameData[0]));
-					if (deviceName.substr(0, 8) == "\\\\?\\HID#")
-						deviceName = deviceName.substr(8);
-					uniqueId = (device.dwType == RIM_TYPEMOUSE ? "raw_mouse_" : "raw_keyboard_") + deviceName;
-					if (deviceName.length() > 17 && deviceName.substr(0, 4) == "VID_" && deviceName.substr(8, 5) == "&PID_")
-						deviceName = deviceName.substr(0, 17);
-					name = (device.dwType == RIM_TYPEMOUSE ? "Mouse " : "Keyboard ") + deviceName;
+					std::string deviceId(&deviceNameData[0], std::strlen(&deviceNameData[0]));
+
+					// Now get the device instance id from the interface instance
+					nowide::wstackstring wname;
+				    if (wname.convert(deviceId.c_str()))
+				    {
+						DEVPROPTYPE propType;
+						ULONG bufSize = 0;
+						if (CM_Get_Device_Interface_PropertyW(wname.c_str(), &DEVPKEY_Device_InstanceId, &propType, nullptr, &bufSize, 0) == CR_BUFFER_SMALL)
+						{
+							std::vector<wchar_t> buf;
+							buf.resize(bufSize / sizeof(wchar_t));
+							if (CM_Get_Device_Interface_PropertyW(wname.c_str(), &DEVPKEY_Device_InstanceId, &propType, (PBYTE)buf.data(), &bufSize, 0) == CR_SUCCESS)
+							{
+								// Locate the device using the device instance id
+								DEVINST devInst;
+								if (CM_Locate_DevNodeW(&devInst, &buf[0], CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS)
+								{
+									// Finally, get the "friendly" device name
+									bufSize = 0;
+									if (CM_Get_DevNode_PropertyW(devInst, &DEVPKEY_NAME, &propType, nullptr, &bufSize, 0) == CR_BUFFER_SMALL)
+									{
+										buf.resize(bufSize / sizeof(wchar_t));
+										if (CM_Get_DevNode_PropertyW(devInst, &DEVPKEY_NAME, &propType, (PBYTE)buf.data(), &bufSize, 0) == CR_SUCCESS)
+										{
+											nowide::stackstring nwname;
+											if (nwname.convert(&buf[0]))
+												name = nwname.c_str();
+										}
+									}
+								}
+							}
+						}
+				    }
+					if (deviceId.substr(0, 8) == "\\\\?\\HID#")
+						deviceId = deviceId.substr(8);
+					uniqueId = (device.dwType == RIM_TYPEMOUSE ? "raw_mouse_" : "raw_keyboard_") + deviceId;
+					if (name.empty())
+					{
+						name = deviceId;
+						if (name.length() > 17 && name.substr(0, 4) == "VID_" && name.substr(8, 5) == "&PID_")
+							name = name.substr(0, 17);
+						name = (device.dwType == RIM_TYPEMOUSE ? "Mouse " : "Keyboard ") + name;
+					}
 				}
 			}
 			uintptr_t handle = (uintptr_t)device.hDevice;
@@ -423,3 +474,4 @@ void term()
 }
 
 }
+#endif

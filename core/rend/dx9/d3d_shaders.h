@@ -30,14 +30,16 @@ public:
 	}
 
 	const ComPtr<IDirect3DPixelShader9>& getShader(bool pp_Texture, bool pp_UseAlpha, bool pp_IgnoreTexA, u32 pp_ShadInstr,
-			bool pp_Offset, u32 pp_FogCtrl, bool pp_BumpMap, bool fog_clamping, bool trilinear, bool palette, bool gouraud);
+			bool pp_Offset, u32 pp_FogCtrl, bool pp_BumpMap, bool fog_clamping, bool trilinear, bool palette, bool gouraud,
+			bool clipInside);
 	const ComPtr<IDirect3DVertexShader9>& getVertexShader(bool gouraud);
 	const ComPtr<IDirect3DPixelShader9>& getModVolShader();
 	void term() {
 		shaders.clear();
-		gouraudVertexShader.reset();
-		flatVertexShader.reset();
-		modVolShader.reset();
+		for (auto& shader : vertexShaders)
+			shader.reset();
+		for (auto& shader : modVolShaders)
+			shader.reset();
 		device.reset();
 	}
 
@@ -48,7 +50,6 @@ private:
 
 	ComPtr<IDirect3DDevice9> device;
 	std::unordered_map<u32, ComPtr<IDirect3DPixelShader9>> shaders;
-	ComPtr<IDirect3DVertexShader9> gouraudVertexShader;
-	ComPtr<IDirect3DVertexShader9> flatVertexShader;
-	ComPtr<IDirect3DPixelShader9> modVolShader;
+	ComPtr<IDirect3DVertexShader9> vertexShaders[4];
+	ComPtr<IDirect3DPixelShader9> modVolShaders[2];
 };

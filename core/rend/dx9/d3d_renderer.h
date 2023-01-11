@@ -26,6 +26,7 @@
 #include "d3d_texture.h"
 #include "d3d_shaders.h"
 #include "rend/sorter.h"
+#include "rend/imgui_driver.h"
 
 class RenderStateCache
 {
@@ -108,6 +109,7 @@ struct D3DRenderer : public Renderer
 	{
 		if (!frameRendered)
 			return false;
+		imguiDriver->setFrameRendered();
 		frameRendered = false;
 		return true;
 	}
@@ -135,7 +137,6 @@ private:
 	void drawSorted(bool multipass);
 	void setMVS_Mode(ModifierVolumeMode mv_mode, ISP_Modvol ispc);
 	void drawModVols(int first, int count);
-	void setProvokingVertices();
 	void setTexMode(D3DSAMPLERSTATETYPE state, u32 clamp, u32 mirror);
 	void setBaseScissor();
 	void prepareRttRenderTarget(u32 texAddress);
@@ -176,5 +177,7 @@ private:
 	bool scissorEnable = false;
 	bool resetting = false;
 	bool frameRendered = false;
+	bool frameRenderedOnce = false;
+	int maxAnisotropy = 1;
 };
 

@@ -12,19 +12,19 @@ def getVersionName = { ->
 }
 
 android {
-    compileSdkVersion 29
+    compileSdk 29
 
     defaultConfig {
-        applicationId "com.flycast.emulator"
-        minSdkVersion 16
-        targetSdkVersion 29
+        applicationId "com.flycastdojo.emulator"
+        minSdk 16
+        targetSdk 29
         versionCode 8
         versionName getVersionName()
         vectorDrawables.useSupportLibrary = true
 
         externalNativeBuild {
             cmake {
-                arguments "-DANDROID_STL=c++_shared", "-DANDROID_ARM_MODE=arm"
+                arguments "-DANDROID_ARM_MODE=arm"
             }
         }
 
@@ -53,7 +53,7 @@ android {
     externalNativeBuild {
         cmake {
             path file('../../../CMakeLists.txt')
-            version '3.10.2+'
+            version '3.18.1'
         }
     }
 

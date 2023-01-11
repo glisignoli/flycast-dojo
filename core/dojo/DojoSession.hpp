@@ -32,11 +32,20 @@
 #include "MessageWriter.hpp"
 #include "MessageReader.hpp"
 
+#ifndef __ANDROID__
+#include <curl/curl.h>
+#include <curl/easy.h>
+#endif
+
+#include "network/miniupnp.h"
+
 #define FRAME_SIZE 12
 #define INPUT_SIZE 6
 #define HEADER_SIZE 256
 
 #define FRAME_BATCH 120
+
+#define MAPLE_FRAME_SIZE 24
 
 #define DEBUG_APPLY 1
 #define DEBUG_RECV 2
@@ -53,8 +62,6 @@ private:
 	std::string host_ip;
 	u32 host_port;
 
-	volatile bool isPaused;
-
 	std::string last_sent;
 	std::deque<std::string> last_inputs;
 
@@ -70,6 +77,8 @@ private:
 public:
 	DojoSession();
 	void Init();
+
+	volatile bool isPaused;
 
 	asio::ip::tcp::socket* tcp_client_socket_;
 
@@ -94,8 +103,7 @@ public:
 	void LoadOfflineConfig();
 	int StartDojoSession();
 	void StartSession(int session_delay, int session_ppf, int session_num_bf);
-
-	void StartTransmitterThread();
+	void StartGGPOSession();
 
 	// frame data extraction methods
 	int GetPlayer(u8* data);
@@ -107,12 +115,14 @@ public:
 	u8 GetAnalogY(u8* data);
 	u32 GetFrameNumber(u8* data);
 	u32 GetEffectiveFrameNumber(u8* data);
+	u32 GetMapleFrameNumber(u8* data);
 
 	int PayloadSize();
 
 	std::map<u32, std::string> net_inputs[4];
+	std::map<u32, std::vector<u8>> maple_inputs;
 
-	std::atomic<u32> FrameNumber;
+	std::atomic<u32> FrameNumber = {0};
 	std::atomic<u32> InputPort;
 	std::string CurrentFrameData[4];
 
@@ -196,6 +206,7 @@ public:
 
 	uint64_t unix_timestamp();
 	uint64_t DetectDelay(const char* ipAddr);
+	uint64_t DetectGGPODelay(const char* ipAddr);
 
 	int host_status;
 
@@ -230,15 +241,20 @@ public:
 	bool SetDojoDevicesByPath(std::string path);
 
 	std::string game_name;
-	bool receiver_header_read;
+	volatile bool receiver_header_read = false;
 	bool receiver_start_read;
 
 	bool recording;
+	bool recording_started = false;
 	std::vector<std::string> record_slot[3];
+	std::set<int> recorded_slots;
 
 	void ToggleRecording(int slot);
 	void TogglePlayback(int slot);
+	void TogglePlayback(int slot, bool hide_slot);
+	void ToggleRandomPlayback();
 	void PlayRecording(int slot);
+	void TrainingSwitchPlayer();
 	void SwitchPlayer();
 	void ResetTraining();
 
@@ -255,6 +271,53 @@ public:
 	MessageWriter replay_msg;
 
 	bool received_player_info;
+
+	std::string GetExternalIP();
+
+	MiniUPnP miniupnp;
+	bool upnp_started;
+	void StartUPnP();
+	void StopUPnP();
+
+	void SetMapleInput(MapleInputState inputState[4]);
+	u32 replay_version;
+	u32 replay_analog;
+
+	void CleanUp();
+	std::string game_checksum;
+	std::string save_checksum;
+
+	std::string player_1;
+	std::string player_2;
+	void AssignNames();
+
+	void LaunchReceiver();
+	bool offline_replay = false;
+
+	void StartTransmitterThread();
+	int current_delay = 0;
+
+	bool commandLineStart = false;
+
+	std::array<std::map<u32, std::bitset<18>>, 2> displayed_inputs;
+	std::array<std::map<u32, std::string>, 2> displayed_inputs_str;
+	std::map<u32, std::string> last_displayed_inputs_str;
+	std::array<std::map<u32, std::string>, 2> displayed_dirs_str;
+	std::array<std::map<u32, u32>, 2> displayed_inputs_duration;
+	std::array<std::bitset<18>, 2> last_held_input;
+	std::array<std::map<u32, std::vector<bool>>, 2> displayed_dirs;
+	std::array<std::map<u32, int>, 2> displayed_num_dirs;
+
+	std::string AddToInputDisplay(u8 * data);
+	void AddToInputDisplay(MapleInputState inputState[4]);
+
+	bool stepping = false;
+	bool manual_pause = false;
+	bool buffering = false;
+
+	std::set<int> button_check_pressed[2];
+	std::set<std::string> training_p1_gamepads;
+	std::string current_gamepad;
 };
 
 extern DojoSession dojo;
