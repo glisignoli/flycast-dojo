@@ -200,6 +200,10 @@ if(NINTENDO_SWITCH)
 endif()
 
 if(NOT LIBRETRO)
+	# Use sndfile
+	FIND_LIBRARY(SNDFILE_LIBRARIES sndfile)
+	target_link_libraries(${PROJECT_NAME} PRIVATE ${SNDFILE_LIBRARIES})
+	
 	if((WIN32 AND NOT MSVC) OR (UNIX AND NOT APPLE AND NOT CMAKE_SYSTEM_NAME MATCHES "(FreeBSD|OpenBSD|NetBSD)"))
 		add_subdirectory(core/deps/breakpad)
 		if(WIN32)
@@ -975,6 +979,7 @@ if(NOT LIBRETRO)
 			core/oslib/audiobackend_oss.cpp
 			core/oslib/audiobackend_pulseaudio.cpp
 			core/oslib/audiobackend_sdl2.cpp
+			core/oslib/audiobackend_rawfile.cpp
 			core/oslib/audiostream.cpp
 			core/oslib/oslib.cpp)
 endif()

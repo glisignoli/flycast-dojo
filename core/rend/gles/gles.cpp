@@ -364,9 +364,6 @@ GLuint paletteTextureId;
 
 glm::mat4 ViewportMatrix;
 
-static bool video_start_time_printed = false;
-static unsigned long last_frame_time;
-
 #ifdef TEST_AUTOMATION
 void do_swap_automation()
 {
@@ -1421,6 +1418,31 @@ void OpenGLRenderer::Term()
 	gles_term();
 }
 
+// Hook into rendering
+// #ifdef WRITE_VIDEO
+void write_video_frame()
+{
+	vidstarted = true;
+
+	// NOTICE_LOG(RENDERER, "Writing video frame");
+	static FILE* video_file = fopen(cfgLoadStr("record", "rawvid","").c_str(), "wb");
+	// extern bool do_screenshot;
+	if (video_file)
+	{
+		int bytesz = gl.ofbo.width * gl.ofbo.height * 3;
+		u8* img = new u8[bytesz];
+
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, gl.ofbo.fbo);
+		glReadPixels(0, 0, gl.ofbo.width, gl.ofbo.height, GL_RGB, GL_UNSIGNED_BYTE, img);
+
+		fwrite(img, 1, bytesz, video_file);
+		delete[] img;
+		fflush(video_file);
+	}
+}
+// #endif
+
+
 bool OpenGLRenderer::Render()
 {
 	RenderFrame(width, height);
@@ -1430,12 +1452,16 @@ bool OpenGLRenderer::Render()
 	DrawOSD(false);
 	frameRendered = true;
 
+	write_video_frame();
+
 	return true;
 }
 
 bool OpenGLRenderer::RenderLastFrame()
 {
+
 	return render_output_framebuffer();
+	write_video_frame();
 }
 
 Renderer* rend_GLES2()

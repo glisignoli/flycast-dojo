@@ -1,4 +1,3 @@
-#ifdef USE_SNDFILE
 #include "audiostream.h"
 #include "cfg/cfg.h"
 #include <sndfile.h>
@@ -36,29 +35,31 @@ static void rawfile_term()
 	sf_close(audio_file);
 }
 
-bool vid_started = false;
-
 static u32 rawfile_push(const void* frame, u32 samples, bool wait)
 {
 	if (audio_time_start == false) {
 		const auto p1 = std::chrono::system_clock::now();
+		NOTICE_LOG(AUDIO, "audio_time_start: %lu\n", std::chrono::duration_cast<std::chrono::milliseconds>(p1.time_since_epoch()).count());
 
-		printf("audio_time_start: %lu\n", std::chrono::duration_cast<std::chrono::milliseconds>(p1.time_since_epoch()).count());
+		//printf("audio_time_start: %lu\n", std::chrono::duration_cast<std::chrono::milliseconds>(p1.time_since_epoch()).count());
         last_frame_time = std::chrono::duration_cast<std::chrono::milliseconds>(p1.time_since_epoch()).count();
 		audio_time_start = true;
 
 	}
 
-	if (wait && vid_started)
+	if (!wait)
 	{
-		// Write audio
-		sf_writef_short(audio_file, (short *)frame, samples);
+		// NOTICE_LOG(AUDIO, "Writing audio frame\n");
 
-		// Debug to figure out how long it takes an audio/video write to occure
+		// Write audio
+		if (vidstarted) {
+			sf_writef_short(audio_file, (short *)frame, samples);
+		}
+		// Debug to figure out how long it takes an audio/video write to occur
 		const auto p2 = std::chrono::system_clock::now();
 		unsigned long frame_timer = std::chrono::duration_cast<std::chrono::milliseconds>(p2.time_since_epoch()).count() - last_frame_time;
 		last_frame_time = std::chrono::duration_cast<std::chrono::milliseconds>(p2.time_since_epoch()).count();
-		printf("Audio Frame render time: %lu\n", frame_timer);
+		// printf("Audio Frame render time: %lu\n", frame_timer);
 
 		// Wait for a certain amount of time
 		if (last_time.time_since_epoch() != the_clock::duration::zero())
@@ -98,4 +99,3 @@ static audiobackend_t audiobackend_rawfile = {
 };
 
 static bool rawaudio = RegisterAudioBackend(&audiobackend_rawfile);
-#endif

@@ -18,13 +18,21 @@ RUN apt-get install -y build-essential \
 	libudev-dev \
 	libpulse-dev \
 	libasio-dev \
-	libzip-dev  \
+	libzip-dev \
+	libxext-dev \
 	libcurl4-gnutls-dev \
 	git \
 	cmake \
 	man-db \
 	vim \
 	libsndfile1-dev \
-	rsync
+	rsync \
+	ninja-build
 
-COPY build.sh /build.sh
+# Add group 1000
+RUN groupadd -g 1000 user
+
+# Add user 1000
+RUN useradd -u 1000 -g 1000 -m user
+
+RUN ln -s /flycast-dojo/build.sh /build.sh
